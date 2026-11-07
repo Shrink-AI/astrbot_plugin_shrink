@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# Node (static/ is the built dashboard and is committed)
+node_modules/
+web/dist/
+
+# Local runtime, screenshots, archives, credentials
+runtime/
+.planning/
+*.zip
+*.log
+*.pid
+initial-password.txt
+admin-password.txt
+.env
+.env.*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Personal deployment notes and tooling (specific to the author's server)
+VERIFICATION.md
+Open-Dashboard.ps1
+Close-Dashboard.ps1
+tools/deploy.py
+tools/update.py
+tools/tunnel.py
+tools/test_tunnel_reconnect.py
