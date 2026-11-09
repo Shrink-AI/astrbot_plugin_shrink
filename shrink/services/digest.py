@@ -8,6 +8,8 @@ import time
 
 from ..ports import ProviderUnavailable
 from ..prompts.digest import EXTRACT, VERIFY, extract_prompt, verify_prompt
+from ..prompts import tag
+from ..prompts import text as prompt_text
 from . import quality
 from .model_output import ask_json
 
@@ -106,7 +108,7 @@ class DigestService:
                 return {"source": source, "status": "empty"}
             run_id = self.runs.start("digest", source)
             stats = {
-                "messages": len(rows), "prompt": EXTRACT.tag, "verify": None,
+                "messages": len(rows), "prompt": tag(EXTRACT), "verify": None,
                 "accepted": {}, "rejected": {}, "outcomes": {},
             }
             try:
@@ -118,7 +120,7 @@ class DigestService:
                     self.model,
                     extract_prompt(group=name, people=roster, known=known, glossary=glossary,
                                    lines=lines),
-                    EXTRACT.system,
+                    prompt_text(EXTRACT),
                     timeout=120,
                 )
                 if not isinstance(result, dict):
@@ -224,9 +226,9 @@ class DigestService:
                 for r in cited
             )
             text.append(f"{n}. 说法：{claim}\n   依据：\n{proof}")
-        stats["verify"] = VERIFY.tag
+        stats["verify"] = tag(VERIFY)
         try:
-            verdicts = await ask_json(self.model, verify_prompt("\n".join(text)), VERIFY.system,
+            verdicts = await ask_json(self.model, verify_prompt("\n".join(text)), prompt_text(VERIFY),
                                       timeout=90)
             verdicts = {
                 int(v.get("n")): v for v in verdicts if isinstance(v, dict) and str(v.get("n")).isdigit()

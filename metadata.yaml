@@ -1,6 +1,6 @@
 name: astrbot_plugin_shrink
 display_name: 石英
 desc: 统一聊天人格、跨会话记忆、自主学习和二次元表情库
-version: 0.6.0
+version: 0.7.0
 author: Shrink
 astrbot_version: ">=4.29.3"

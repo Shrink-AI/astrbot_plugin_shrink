@@ -8,6 +8,7 @@ import time
 from ..config import BOT_NAME
 from ..persistence.review import family
 from ..prompts.teach import PROPOSE, REVIEW, propose_prompt, review_prompt
+from ..prompts import text as prompt_text
 from ..text_rules import GENERIC_ADDRESS, RELATIVE_DAY, SELF_IDENTITY
 from .model_output import ask_json
 
@@ -67,7 +68,7 @@ class TeachService:
                 self.model,
                 propose_prompt(people=roster, memories=memories, history=history, message=text,
                                today=datetime.date.today().isoformat()),
-                PROPOSE.system,
+                prompt_text(PROPOSE),
                 timeout=150,
             )
         except Exception as exc:
@@ -397,7 +398,7 @@ class TeachService:
             answer = await ask_json(
                 self.model,
                 review_prompt("\n".join(f"{n}. {t}" for n, t in enumerate(described, 1))),
-                REVIEW.system,
+                prompt_text(REVIEW),
                 timeout=60,
             )
             for q in answer.get("questions", []) if isinstance(answer, dict) else []:

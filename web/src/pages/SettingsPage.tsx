@@ -34,6 +34,9 @@ export function SettingsPage() {
         {num('stale_seconds', '插话过期时间（秒）', 10, 3600, 5, '超过这个时间且群里已聊了 3 条以上，就不再插话')}
         {num('split_probability', '偶尔分两条发的概率', 0, 1, 0.01)}
         {num('context_budget', '群聊上下文字数预算', 1000, 20000, 100)}
+        {flag('debounce_enabled', '合并同一个人的连续短消息')}
+        {num('debounce_seconds', '等下一条消息（秒）', 0.1, 5, 0.1)}
+        {num('debounce_max_seconds', '连续发言最多等待（秒）', 1, 15, 0.5)}
       </div>
     </Panel>
     <Panel title="记忆与整理">

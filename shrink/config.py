@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 
-from .prompts.chat import FIXED_PERSONA, persona_prompt  # noqa: F401  (public re-export)
+from .prompts.chat import fixed_persona, persona_prompt  # noqa: F401  (public re-export)
 
 BOT_NAME = "石英"
 
@@ -33,6 +33,9 @@ class Settings(BaseModel):
     split_probability: float = Field(0.15, ge=0, le=1)
     stale_seconds: int = Field(60, ge=10, le=3600)
     engaged_seconds: int = Field(180, ge=0, le=1800)
+    debounce_enabled: bool = True
+    debounce_seconds: float = Field(1.5, ge=0.1, le=5)
+    debounce_max_seconds: float = Field(6, ge=1, le=15)
     # 0.6: tools and experience.
     skills_enabled: bool = True
     sandbox_url: str = "http://shrink-sandbox:8765"

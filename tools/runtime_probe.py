@@ -17,7 +17,7 @@ async def main():
     from astrbot.core.provider.entities import LLMResponse, ProviderRequest
     from astrbot.core.provider.sources.openai_responses_source import ProviderOpenAIResponses
     from astrbot.core.message.message_event_result import MessageEventResult
-    from shrink.config import FIXED_PERSONA
+    from shrink.config import fixed_persona
     from shrink.application import Application
     from shrink.adapters.conversation import ConversationAdapter
 
@@ -43,7 +43,7 @@ async def main():
             return await providers[embed_cfg["id"]].get_embedding(text)
 
         async def sync(prompt):
-            assert FIXED_PERSONA in prompt
+            assert fixed_persona() in prompt
 
         app = Application(Path(temp), chat, embed, sync)
         app.persona_repository.add_version("说话随和，偶尔接梗。", [], "probe")

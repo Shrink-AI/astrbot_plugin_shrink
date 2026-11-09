@@ -22,6 +22,9 @@ export interface Settings {
   glossary_per_run: number;
   split_probability: number;
   stale_seconds: number;
+  debounce_enabled: boolean;
+  debounce_seconds: number;
+  debounce_max_seconds: number;
   engaged_seconds: number;
   skills_enabled: boolean;
   sandbox_url: string;
@@ -146,3 +149,14 @@ export interface SkillVersion {
   status: string; reason: string; episodes: number[]; origin: string; created: number;
 }
 export interface SkillDetail extends Skill { versions: SkillVersion[]; episodes: Episode[] }
+
+export interface PromptEntry {
+  key: string; group: string; title: string; note: string; text: string; default: string;
+  placeholders: string[]; modified: boolean; updated: number | null;
+}
+export interface PromptVersion { id: number; text: string; note: string; created: number; reset: boolean }
+export interface PromptTrialReply { text: string; form?: string; reason?: string; seconds?: number; error?: string }
+export interface PromptTrialRow {
+  time: number; speaker: string; said: string; original: string[];
+  saved: PromptTrialReply; draft: PromptTrialReply;
+}

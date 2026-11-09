@@ -1,6 +1,12 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from .schemas import SkillEdit
+
+
+class ResolveSkill(BaseModel):
+    choice: str
+    snapshot: str
 
 
 def router_for(app):
@@ -30,6 +36,14 @@ def router_for(app):
             raise HTTPException(400, "没有要改的内容")
         await app.skills.edit(skill_id, **fields)
         return {"ok": True}
+
+    @router.get("/skills/{skill_id}/native")
+    async def native_skill(skill_id: int):
+        return await app.native_skills.inspect(skill_id)
+
+    @router.post("/skills/{skill_id}/native")
+    async def resolve_skill(skill_id: int, body: ResolveSkill):
+        return await app.native_skills.resolve(skill_id, body.choice, body.snapshot)
 
     @router.delete("/skills/{skill_id}")
     async def delete_skill(skill_id: int):

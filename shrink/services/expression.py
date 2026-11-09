@@ -28,6 +28,7 @@ def wants_detail(text):
     return bool(
         re.search(
             r"详细|展开|解释|分析一下|分析下|步骤|教程|怎么配置|怎么实现|如何实现|"
+            r"列(一下|下|个|出|全)|清单|明细|"
             r"为什么.{0,15}(报错|失败|不能|异常)|列出|对比|比较|"
             r"(写|给|生成|提供|贴).{0,12}(代码|脚本|程序|文章|方案)|```|"
             r"\b(code|explain|debug|step.by.step)\b",
@@ -48,6 +49,24 @@ def choose_form(text, random_value, meme_available=False, meme_roll=1.0):
         if random_value < acc:
             return form
     return "short"
+
+
+ASKS = re.compile(r"[?？]|吗|呢|哪|谁|什么|啥|怎么|几")
+REACTION_LIMIT = 6
+
+
+def settle_meme(text, *, explicit, reason):
+    """People answer with words or a sticker, rarely both. Returns (text, keep_sticker).
+
+    A short reaction becomes the sticker alone; anything that carries content (an answer to
+    someone calling 石英, a question, a longer line) stays as words and the sticker is dropped.
+    Someone asking for a sticker gets both."""
+    text = (text or "").strip()
+    if not text or explicit:
+        return text, True
+    if reason != "direct" and len(text) <= REACTION_LIMIT and not ASKS.search(text):
+        return "", True
+    return text, False
 
 
 @dataclass
@@ -91,6 +110,10 @@ class ExpressionService:
         if skip and reason in ("engaged", "spontaneous"):
             return Finished("", skip=True)
         text = drop_meta_sentences(text) if looks_like_meta(text) else text
+        if form == "tool_result":
+            # Keep every fact, but drop the period at each line end like a person typing.
+            text = "\n".join(re.sub(r"。+$", "", line.rstrip()) for line in text.strip().splitlines())
+            return Finished(text.strip(), meme_id=meme_id)
         if form == "detail":
             return Finished(text.strip(), meme_id=meme_id)
         flat = re.sub(r"\s+", " ", text).strip()

@@ -8,6 +8,7 @@ from .runs import record
 class DigestRepository:
     def __init__(self, database):
         self.database = database
+        self.resolve = lambda rows: rows
 
     def add(self, source, start, end, count, summary, run_id=None):
         with self.database.transaction() as connection:
@@ -20,10 +21,10 @@ class DigestRepository:
 
     def before(self, source, end, limit=2):
         """The newest summaries that end before the verbatim window starts."""
-        return self.database.rows(
+        return self.resolve(self.database.rows(
             "SELECT * FROM digests WHERE source=? AND end<=? ORDER BY end DESC LIMIT ?",
             (source, end, limit),
-        )
+        ))
 
     def overlapping(self, source, since, limit=6):
         """Summaries of one conversation that end after `since`, oldest first."""
@@ -31,7 +32,7 @@ class DigestRepository:
             "SELECT * FROM digests WHERE source=? AND end>=? ORDER BY end DESC LIMIT ?",
             (source, since, limit),
         )
-        return list(reversed(rows))
+        return self.resolve(list(reversed(rows)))
 
     def search(self, grams, exclude=(), limit=2, source=None):
         terms = [g for g in grams if len(g) >= 3][:20]
@@ -43,7 +44,7 @@ class DigestRepository:
             "AND (? IS NULL OR d.source=?) ORDER BY rank LIMIT ?",
             (query, source, source, limit + len(exclude)),
         )
-        return [r for r in rows if r["id"] not in set(exclude)][:limit]
+        return self.resolve([r for r in rows if r["id"] not in set(exclude)][:limit])
 
     def recent(self, source="", limit=30, offset=0):
         return self.database.rows(

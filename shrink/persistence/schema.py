@@ -129,6 +129,10 @@ TABLES = [
       lesson TEXT NOT NULL DEFAULT '', reviewed INTEGER NOT NULL DEFAULT 0,
       created REAL NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS episodes_review ON episodes(reviewed, created)",
+    """CREATE TABLE IF NOT EXISTS prompt_versions(
+      id INTEGER PRIMARY KEY, key TEXT NOT NULL, text TEXT, note TEXT NOT NULL DEFAULT '',
+      created REAL NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS prompt_versions_key ON prompt_versions(key, id)",
 ]
 
 def _create(connection):

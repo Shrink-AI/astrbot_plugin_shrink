@@ -7,7 +7,7 @@ import { date, place, runLabels, shortDate } from '../shared/format';
 import { LearningDetail } from '../shared/LearningDetail';
 
 export function PersonaPage() {
-  const { status, busy, action, revision, setError } = useDashboard();
+  const { status, busy, action, revision, setError, go } = useDashboard();
   const [persona, setPersona] = useState<Persona | null>(null);
   const [draft, setDraft] = useState('');
   const dirty = useRef(false);
@@ -44,7 +44,7 @@ export function PersonaPage() {
           <button className="primary" disabled={busy || !draft.trim() || draft === persona.learned} onClick={() => void action(async () => {
             await api('/persona', 'PUT', { text: draft }); dirty.current = false;
           })}>保存为新版本</button></div>
-        <details style={{ marginTop: 10 }}><summary>固定规则（不参与学习）</summary><pre>{persona.fixed}</pre></details>
+        <details style={{ marginTop: 10 }}><summary>固定规则（不参与学习）</summary><pre>{persona.fixed}</pre><button className="small" style={{ marginTop: 6 }} onClick={() => go('prompts')}>在提示词页修改</button></details>
       </Panel>
       <Panel title="版本">
         <div className="table-wrap"><table className="table"><tbody>

@@ -5,6 +5,7 @@ import datetime
 import time
 
 from ..prompts.knowledge import GROUP, PROFILE, group_prompt, profile_prompt
+from ..prompts import text as prompt_text
 from ..text_rules import INSULT
 from .model_output import ask_json
 
@@ -38,7 +39,7 @@ class ConsolidationService:
         aliases = "、".join(self.people.names_of(uid)[1:6])
         answer = await ask_json(
             self.model, profile_prompt(person["name"], aliases, memories, stats_text, said),
-            PROFILE.system, timeout=60,
+            prompt_text(PROFILE), timeout=60,
         )
         if not isinstance(answer, dict):
             return False
@@ -59,7 +60,7 @@ class ConsolidationService:
             return False
         name = source.rsplit(":", 1)[-1]
         text = "\n".join(f"- {_date(r['start'])}：{r['summary'][:200]}" for r in rows)
-        answer = await ask_json(self.model, group_prompt(name, text), GROUP.system, timeout=60)
+        answer = await ask_json(self.model, group_prompt(name, text), prompt_text(GROUP), timeout=60)
         summary = str(answer.get("summary") or "").strip()[:220] if isinstance(answer, dict) else ""
         if not summary:
             return False

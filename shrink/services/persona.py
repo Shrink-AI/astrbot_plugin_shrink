@@ -40,6 +40,12 @@ class PersonaService:
         self.state.put("persona_sync", {"status": "synced", "version": version, "at": time.time()})
         return version
 
+    async def resync(self):
+        """Push the current persona prompt to the host after its wording changed."""
+        async with self.persona_lock:
+            await self.sync_persona(persona_prompt(self.repository.learned_persona()))
+            self.state.put("persona_sync", {"status": "synced", "at": time.time()})
+
     async def rollback(self, version_id):
         async with self.persona_lock:
             target = self.repository.get(version_id)

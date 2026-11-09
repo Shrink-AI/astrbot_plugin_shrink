@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import growth, media, memory, people, runs, skills, system, teach
+from . import growth, media, memory, operations, people, prompts, runs, skills, system, teach
 from .auth import install_auth
 
 
@@ -34,7 +34,10 @@ def create_app(
     app.include_router(runs.router_for(application))
     app.include_router(teach.router_for(application))
     app.include_router(skills.router_for(application))
+    app.include_router(prompts.router_for(application))
     app.include_router(media.router_for(application.memes))
+    if getattr(application, "operations", None):
+        app.include_router(operations.router_for(application))
 
     @app.exception_handler(ValueError)
     async def value_error(request, exc):

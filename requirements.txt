@@ -3,3 +3,5 @@ uvicorn>=0.30,<1
 argon2-cffi>=23.1,<26
 python-multipart>=0.0.18,<1
 Pillow>=10.4,<13
+httpx>=0.27,<1
+PyYAML>=6,<7

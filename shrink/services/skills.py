@@ -9,8 +9,10 @@ import time
 
 from ..config import BOT_NAME
 from ..prompts.skills import REFLECT, reflect_prompt
+from ..prompts import text as prompt_text
 from ..text_rules import INJECTION, grams
 from .model_output import ask_json
+from .tool_evidence import execution_evidence
 
 # Wait this long before judging an episode, so corrections and follow-ups are visible.
 SETTLE_SECONDS = 600
@@ -41,12 +43,14 @@ def tool_step(name, args, result):
         args_text = json.dumps(args or {}, ensure_ascii=False)
     except (TypeError, ValueError):
         args_text = str(args)
+    evidence = execution_evidence(result)
     result = re.sub(r"\s+", " ", str(result or "")).strip()
     return {
         "name": str(name),
         "args": args_text[:300],
         "result": result[:TOOL_RESULT_LIMIT],
         "at": time.time(),
+        **({'execution': evidence} if evidence else {}),
     }
 
 
@@ -184,7 +188,7 @@ class SkillService:
             follow_up=self._follow_up(episode),
             skills=known,
         )
-        result = await ask_json(self.model, prompt, REFLECT.system, timeout=90)
+        result = await ask_json(self.model, prompt, prompt_text(REFLECT), timeout=90)
         if not isinstance(result, dict):
             raise ValueError("reflection is not an object")
         verdict = str(result.get("verdict") or "unclear")

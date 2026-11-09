@@ -108,15 +108,16 @@ async def main():
             await restored.start(set())
             assert restored.application.persona_repository.learned_persona()
             await restored.close()
-        conflict = host_module.PluginHost(context, data, ROOT / "static", module.__name__)
-        try:
-            await conflict.start({"astrbot_plugin_livingmemory"})
-        except RuntimeError:
-            assert conflict.application.closed
-        else:
-            raise AssertionError("Conflicting plugin was accepted")
+        coexist = host_module.PluginHost(context, data, ROOT / "static", module.__name__)
+        with patch.object(host_module, "DashboardServer",
+                          partial(runtime.DashboardServer, host="127.0.0.1", port=0)):
+            try:
+                await coexist.start({"astrbot_plugin_livingmemory"})
+                assert not coexist.application.closed
+            finally:
+                await coexist.close()
     print(
-        "INTEGRATION_OK hooks, memory, audience, dedup, startup, shutdown, restart, conflict cleanup; external_sends=0"
+        "INTEGRATION_OK hooks, memory, audience, dedup, startup, shutdown, restart, coexistence; external_sends=0"
     )
 
 if __name__ == "__main__":

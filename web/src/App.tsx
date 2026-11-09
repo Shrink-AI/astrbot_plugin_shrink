@@ -1,4 +1,4 @@
-import { Brain, ClipboardList, Gauge, Image, Lightbulb, LogOut, MessagesSquare, RefreshCw, Settings2, UserRound, Users, X } from 'lucide-react';
+import { Brain, FileText, Gauge, GraduationCap, History, Image, Lightbulb, LogOut, MessagesSquare, Puzzle, RefreshCw, Settings2, UserRound, Users, Wrench, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { api, setCsrf } from './api/client';
 import type { Configuration, Status } from './api/types';
@@ -8,23 +8,39 @@ import { MemoryPage } from './pages/MemoryPage';
 import { Overview } from './pages/Overview';
 import { PeoplePage } from './pages/PeoplePage';
 import { PersonaPage } from './pages/PersonaPage';
+import { PromptsPage } from './pages/PromptsPage';
 import { RunsPage } from './pages/RunsPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { SkillsPage } from './pages/SkillsPage';
 import { TeachPage } from './pages/TeachPage';
+import { OperationsPage, CapabilitiesPage } from './pages/OperationsPage';
+import { ChatsPage } from './pages/ChatsPage';
 import { DashboardContext } from './shared/dashboard';
 
-const pages = [
-  { key: 'overview', name: '概览', icon: Gauge, view: Overview },
-  { key: 'people', name: '人物', icon: Users, view: PeoplePage },
-  { key: 'memory', name: '记忆', icon: Brain, view: MemoryPage },
-  { key: 'teach', name: '定向学习', icon: MessagesSquare, view: TeachPage },
-  { key: 'skills', name: '经验', icon: Lightbulb, view: SkillsPage },
-  { key: 'runs', name: '整理记录', icon: ClipboardList, view: RunsPage },
-  { key: 'persona', name: '人格', icon: UserRound, view: PersonaPage },
-  { key: 'memes', name: '表情', icon: Image, view: MemesPage },
-  { key: 'settings', name: '设置', icon: Settings2, view: SettingsPage },
+const sections = [
+  { name: '', pages: [
+    { key: 'overview', name: '概览', icon: Gauge, view: Overview },
+  ] },
+  { name: '群聊', pages: [
+    { key: 'chats', name: '聊天与图片', icon: MessagesSquare, view: ChatsPage },
+    { key: 'people', name: '人物', icon: Users, view: PeoplePage },
+    { key: 'memory', name: '记忆', icon: Brain, view: MemoryPage },
+    { key: 'memes', name: '表情', icon: Image, view: MemesPage },
+  ] },
+  { name: '说话方式', pages: [
+    { key: 'persona', name: '人格', icon: UserRound, view: PersonaPage },
+    { key: 'prompts', name: '提示词', icon: FileText, view: PromptsPage },
+    { key: 'teach', name: '定向学习', icon: GraduationCap, view: TeachPage },
+    { key: 'skills', name: '经验', icon: Lightbulb, view: SkillsPage },
+  ] },
+  { name: '后台', pages: [
+    { key: 'runs', name: '整理记录', icon: History, view: RunsPage },
+    { key: 'operations', name: '开发任务', icon: Wrench, view: OperationsPage },
+    { key: 'capabilities', name: '插件与能力', icon: Puzzle, view: CapabilitiesPage },
+    { key: 'settings', name: '设置', icon: Settings2, view: SettingsPage },
+  ] },
 ];
+const pages = sections.flatMap(s => s.pages);
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -80,10 +96,13 @@ export function App() {
     <div className="shell">
       <aside className="sidebar">
         <div className="brand">石英后台</div>
-        <nav className="nav">{pages.map(p => <button key={p.key} className={p.key === current.key ? 'active' : ''} onClick={() => go(p.key)}>
-          <p.icon size={16} />{p.name}
-          {p.key === 'teach' && status.counts.review_open > 0 && <span className="count">{status.counts.review_open}</span>}
-        </button>)}</nav>
+        <nav className="nav">{sections.map(s => <div key={s.name || 'top'} className="nav" role="group" aria-label={s.name || undefined}>
+          {s.name && <div className="nav-group">{s.name}</div>}
+          {s.pages.map(p => <button key={p.key} className={p.key === current.key ? 'active' : ''} onClick={() => go(p.key)}>
+            <p.icon size={16} />{p.name}
+            {p.key === 'teach' && status.counts.review_open > 0 && <span className="count">{status.counts.review_open}</span>}
+          </button>)}
+        </div>)}</nav>
         <div className="sidebar-foot">
           <button className="ghost" disabled={busy} onClick={refresh}><RefreshCw size={15} />刷新</button>
           <button className="ghost" onClick={logout}><LogOut size={15} />退出</button>

@@ -11,6 +11,8 @@ from ..persistence.learning import LearningRepository
 from ..persistence.messages import MessageRepository
 from ..ports import ChatModel, ErrorSink
 from ..prompts.knowledge import LEARNING, learning_prompt
+from ..prompts import tag
+from ..prompts import text as prompt_text
 from ..text_rules import INJECTION, INSULT
 from .model_output import ask_json
 from .persona import PersonaService
@@ -97,7 +99,7 @@ class LearningService:
                 "evidence": [],
                 "sample_ids": [m["id"] for m in batch],
                 "provider": cfg.model_provider,
-                "prompt": LEARNING.tag,
+                "prompt": tag(LEARNING),
             }
             run_id = self.repository.start(batch, detail)
             phase = "model"
@@ -110,7 +112,7 @@ class LearningService:
                 try:
                     result = await ask_json(
                         self.model, learning_prompt(detail["original_style"], samples),
-                        LEARNING.system, timeout=90,
+                        prompt_text(LEARNING), timeout=90,
                     )
                 except ValueError:
                     phase = "parse"

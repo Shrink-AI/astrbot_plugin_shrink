@@ -6,6 +6,44 @@ import { useDashboard } from '../shared/dashboard';
 import { certainty, date, memoryKinds, memoryStatus, origins, place, shortDate } from '../shared/format';
 import { EditContent } from '../shared/EditContent';
 
+function MaterialSources() {
+  const { revision, action, busy, setError } = useDashboard();
+  const [rows, setRows] = useState<any[]>([]);
+  const [selected, setSelected] = useState<any>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api<any[]>('/operations/materials').then(data => { if(!cancelled) setRows(data); })
+      .catch(e => { if(!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [revision]);
+  const parsed = (raw: string) => { try { return JSON.parse(raw); } catch { return { error: raw }; } };
+  return <section className="panel">
+    <details><summary>资料来源与整理结果（最近 100 项）</summary>
+      {!rows.length ? <Empty text="尚未整理交付资料。" /> : rows.map(row => <div className="proposal" key={row.id}>
+        <div className="row"><b>{row.title}</b><Badge>{row.undone ? '已撤销' :
+          row.status === 'curated' ? '已整理' : row.status === 'failed' ? '整理失败' : '整理中'}</Badge>
+          <small>{date(row.created)}</small></div>
+        <p>{row.uri} · {place(row.source)}</p>
+        <p>{parsed(row.result).summary || parsed(row.result).error || '等待整理结果'}</p>
+        <div className="row">
+          <button disabled={busy} onClick={() => void action(async () => {
+            setSelected(await api(`/operations/materials/${row.id}`));
+          }, '')}>查看来源原文与关联记忆</button>
+          <button disabled={busy || row.status === 'processing' || !!row.undone}
+            onClick={() => { if(confirm(`撤销“${row.title}”此次整理产生的记忆变更？来源原文仍保留。`))
+              void action(() => api(`/runs/${row.run_id}/undo`, 'POST'), '已撤销此次整理'); }}>撤销此次整理</button>
+        </div>
+      </div>)}
+      {selected && <div className="proposal">
+        <div className="row"><b>{selected.title}</b><button onClick={() => setSelected(null)}>关闭原文</button></div>
+        <p>{selected.uri}</p>
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{selected.content}</pre>
+        <pre style={{ whiteSpace: 'pre-wrap' }}>{JSON.stringify(parsed(selected.result), null, 2)}</pre>
+      </div>}
+    </details>
+  </section>;
+}
+
 function statusBadge(m: Memory) {
   if(m.verified === 1) return <Badge tone="ok">已确认</Badge>;
   if(m.verified === -1) return <Badge tone="bad">判定错误</Badge>;
@@ -48,6 +86,7 @@ export function MemoryPage() {
   const verify = (m: Memory, verdict: 'correct' | 'wrong') => void action(() => api(`/memories/${m.id}/verify`, 'POST', { verdict }), verdict === 'correct' ? '已确认' : '已判定为错误');
   return <>
     <PageHead title="记忆" />
+    <MaterialSources />
     <div className="toolbar">
       <input type="search" placeholder="搜索内容" value={q} onChange={e => { setQ(e.target.value); setOffset(0); }} />
       <select aria-label="类型" value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}>

@@ -1,0 +1,5 @@
+# The image only installs plugin dependencies; plugin source is mounted by AstrBot.
+**
+!Dockerfile
+!requirements.txt
+!.dockerignore

@@ -22,6 +22,34 @@ initial-password.txt
 admin-password.txt
 .env
 .env.*
+# Runtime data and credentials must never enter source releases.
+/data/
+/plugin_data/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+/cmd_config.json
+/bridge_config.json
+/backups/
+
+# Other plugins and their integration tests / migration tools
+/integrations/
+/tests/test_integration_bridge.py
+/tests/test_integration_contracts.py
+/tests/test_reminder_delivery.py
+/tests/test_reminder_migration.py
+/tools/crafttable_executor_probe.py
+/tools/plugin_protocol_probe.py
+/tools/migrate_reminders.py
 
 # Editors / OS
 .vscode/
@@ -37,3 +65,7 @@ tools/deploy.py
 tools/update.py
 tools/tunnel.py
 tools/test_tunnel_reconnect.py
+/tools/agent_orchestration_probe.py
+/docs/deployment.md
+/docs/local-judge-model.md
+/docs/service-upgrades.md

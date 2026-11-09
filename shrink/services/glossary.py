@@ -5,6 +5,7 @@ import json
 import re
 
 from ..prompts.knowledge import GLOSSARY, glossary_prompt
+from ..prompts import text as prompt_text
 from ..text_rules import INSULT
 from .model_output import ask_json
 from .quality import ACTIVE_AT
@@ -44,7 +45,7 @@ class GlossaryService:
             usage += f"\n（整理时的理解：{item['usage']}）"
         try:
             answer = await ask_json(self.model, glossary_prompt(term, usage, numbered),
-                                    GLOSSARY.system, timeout=60)
+                                    prompt_text(GLOSSARY), timeout=60)
         except Exception as exc:
             self.error("glossary", exc)
             return "failed"

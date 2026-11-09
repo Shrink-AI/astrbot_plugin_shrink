@@ -7,7 +7,7 @@ import { date, place } from '../shared/format';
 
 const outcomes: Record<string, string> = { ok: '回复了', timeout: '超时没回上', error: '出错' };
 const verdicts: Record<string, string> = { good: '办得好', bad: '没办好', unclear: '看不出', failed: '复盘失败' };
-const versionOrigins: Record<string, string> = { reflection: '复盘', admin: '管理员修改', rule: '自动停用' };
+const versionOrigins: Record<string, string> = { reflection: '复盘', admin: '管理员修改', rule: '自动停用', native_skill: '原生 Skill 修改' };
 const toolNames: Record<string, string> = {
   web_search_deepseek: '联网搜索', deepseek_fetch_web_page: '打开网页', shrink_chat_history: '翻聊天记录',
   shrink_lookup: '查人和记忆', shrink_find_meme: '找表情', shrink_run_python: '跑代码', shrink_remember: '记住',
@@ -67,8 +67,41 @@ function SkillEditor({ skill }: { skill: SkillDetail }) {
   </Panel>;
 }
 
+type NativeVersion = {
+  name: string; conflict: boolean; snapshot: string;
+  local: { title: string; trigger: string; steps: string; status: string };
+  native: { content: string; active: boolean; exists: boolean };
+};
+
+function NativeSkillStatus({ id }: { id: number }) {
+  const { revision, busy, action, setError } = useDashboard();
+  const [version, setVersion] = useState<NativeVersion | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setVersion(null);
+    api<NativeVersion>(`/skills/${id}/native`).then(v => { if(!cancelled) setVersion(v); })
+      .catch(e => { if(!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [id, revision]);
+  if(!version) return null;
+  return <Panel title="AstrBot Skill">
+    <div className="row"><code>{version.name}</code>
+      <Badge tone={version.conflict ? 'bad' : undefined}>{version.conflict ? '两边均有修改，等待选择' :
+        version.native.exists ? version.native.active ? '原生端已启用' : '原生端已停用' : '原生端不存在'}</Badge></div>
+    {version.conflict && <p>两份内容都会保存在冲突处理记录中。选择原生版本时，也会保留经验修改历史。</p>}
+    <details open={version.conflict}><summary>查看原生内容</summary>
+      <pre style={{ whiteSpace: 'pre-wrap' }}>{version.native.content || '（已删除）'}</pre></details>
+    {version.conflict && <div className="row">
+      <button disabled={busy} onClick={() => void action(() => api(`/skills/${id}/native`, 'POST',
+        { choice: 'local', snapshot: version.snapshot }), '已将经验版本同步到原生 Skill')}>采用经验版本</button>
+      <button disabled={busy} onClick={() => void action(() => api(`/skills/${id}/native`, 'POST',
+        { choice: 'native', snapshot: version.snapshot }), '已采用原生 Skill 版本')}>采用原生 Skill 版本</button>
+    </div>}
+  </Panel>;
+}
+
 function SkillsTab() {
-  const { revision, setError } = useDashboard();
+  const { revision, setError, busy, action } = useDashboard();
   const [status, setStatus] = useState('active');
   const [offset, setOffset] = useState(0);
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -105,6 +138,7 @@ function SkillsTab() {
         </section>
         {detail && <div>
           <SkillEditor key={`${detail.id}:${detail.version}:${detail.status}`} skill={detail} />
+          <NativeSkillStatus id={detail.id} />
           <Panel title="修改历史">
             {detail.versions.map(v => <div key={v.id} className="proposal">
               <div className="row"><b>第 {v.version} 版</b><Badge>{versionOrigins[v.origin] ?? v.origin}</Badge>
@@ -112,6 +146,10 @@ function SkillsTab() {
               <div className="review-note">原因：{v.reason}{v.episodes.length ? `（依据第 ${v.episodes.join('、')} 次求助）` : ''}</div>
               <div className="review-note">{v.title}｜{v.trigger}</div>
               <div className="chatline">{v.steps}</div>
+              <button disabled={busy || v.version === detail.version} onClick={() => void action(
+                () => api(`/skills/${detail.id}`, 'PATCH', {
+                  title: v.title, trigger: v.trigger, steps: v.steps, status: v.status,
+                }), '已恢复此版本，原有修改历史保留')}>恢复此版本</button>
             </div>)}
           </Panel>
           <Panel title="依据的求助经过">

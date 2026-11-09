@@ -12,13 +12,13 @@ from PIL import Image
 from shrink.api.app import create_app
 from shrink.application import Application
 
-EICY = "qq:9000000001"
+PERSON_A = "qq:9000000001"
 
 
 async def model(prompt, system="", images=None):
     if "管理员刚才说" in prompt:
         return json.dumps({"reply": "好", "proposals": [
-            {"type": "memory", "kind": "event", "subject": "p1", "text": "阿白会弹吉他", "importance": 3}
+            {"type": "memory", "kind": "event", "subject": "p1", "text": "成员甲会弹吉他", "importance": 3}
         ]}, ensure_ascii=False)
     return "{}"
 
@@ -38,7 +38,7 @@ async def test_management_endpoints(tmp_path):
     app = Application(tmp_path / "data", model, nothing, nothing)
     seed_known(app)
     app.messages.ingest({
-        "id": "m1", "platform": "qq", "account": "9000000001", "user_id": EICY, "name": "阿白",
+        "id": "m1", "platform": "qq", "account": "9000000001", "user_id": PERSON_A, "name": "成员甲",
         "source": "qq:group:1", "text": "在吗", "created": time.time(),
     })
     web = create_app(app, tmp_path, lambda: {"chat": [app.state.settings.model_provider],
@@ -54,42 +54,42 @@ async def test_management_endpoints(tmp_path):
         assert (await client.post("/api/v1/people/x/nicknames", json={"name": "a"})).status_code == 403
         client.headers["x-csrf-token"] = login.json()["csrf"]
 
-        people = (await client.get("/api/v1/people?q=白宝")).json()
-        assert people[0]["id"] == EICY and {n["name"] for n in people[0]["nicknames"]} >= {"白宝"}
-        assert (await client.get("/api/v1/users?q=阿白")).status_code == 404
+        people = (await client.get("/api/v1/people?q=小甲")).json()
+        assert people[0]["id"] == PERSON_A and {n["name"] for n in people[0]["nicknames"]} >= {"小甲"}
+        assert (await client.get("/api/v1/users?q=成员甲")).status_code == 404
         bots = (await client.get("/api/v1/people?kind=bot")).json()
         assert [b["id"] for b in bots] == ["qq:9000000002"]
-        added = await client.post(f"/api/v1/people/{EICY}/nicknames", json={"name": "小E"})
+        added = await client.post(f"/api/v1/people/{PERSON_A}/nicknames", json={"name": "小E"})
         nickname_id = added.json()["id"]
-        detail = (await client.get(f"/api/v1/people/{EICY}")).json()
+        detail = (await client.get(f"/api/v1/people/{PERSON_A}")).json()
         assert "小E" in [n["name"] for n in detail["nicknames"]] and detail["sources"]
         assert (await client.delete(f"/api/v1/nicknames/{nickname_id}")).status_code == 200
-        assert (await client.put(f"/api/v1/people/{EICY}/kind", json={"kind": "robot"})).status_code == 422
+        assert (await client.put(f"/api/v1/people/{PERSON_A}/kind", json={"kind": "robot"})).status_code == 422
 
-        memory_id = app.memory_repository.add("event", EICY, "qq:group:1", "阿白在学rust",
+        memory_id = app.memory_repository.add("event", PERSON_A, "qq:group:1", "成员甲在学rust",
                                               status="candidate", confidence=0.4)
         app.review.add("memory_candidate", memory_id, "测试")
         queue = (await client.get("/api/v1/review")).json()
-        assert queue[0]["text"] == "关于 阿白：阿白在学rust"
+        assert queue[0]["text"] == "关于 成员甲：成员甲在学rust"
         assert (await client.post(f"/api/v1/review/{queue[0]['id']}",
                                   json={"verdict": "correct"})).status_code == 200
         assert app.memory_repository.get(memory_id)["verified"] == 1
         listed = (await client.get("/api/v1/memories?status=active&kind=event")).json()
         assert [m["id"] for m in listed] == [memory_id]
-        assert listed[0]["subject"] == EICY and "user_id" not in listed[0]
+        assert listed[0]["subject"] == PERSON_A and "user_id" not in listed[0]
         batch = await client.post("/api/v1/memories/batch", json={"ids": [memory_id], "action": "reject"})
         assert batch.json()["count"] == 1
         assert app.memory_repository.get(memory_id)["status"] == "rejected"
 
         session = (await client.post("/api/v1/teach/sessions")).json()["id"]
         reply = (await client.post(f"/api/v1/teach/sessions/{session}/messages",
-                                   json={"text": "阿白会弹吉他"})).json()
+                                   json={"text": "成员甲会弹吉他"})).json()
         proposal = reply["proposals"][0]
         accepted = await client.post(f"/api/v1/teach/proposals/{proposal['id']}/accept",
-                                     json={"text": "阿白会弹电吉他"})
+                                     json={"text": "成员甲会弹电吉他"})
         assert accepted.status_code == 200
         taught = app.database.rows("SELECT * FROM memories WHERE origin='admin_teach'")[0]
-        assert taught["text"] == "阿白会弹电吉他" and taught["verified"] == 1
+        assert taught["text"] == "成员甲会弹电吉他" and taught["verified"] == 1
         runs = (await client.get("/api/v1/runs")).json()
         assert runs[0]["kind"] == "teach"
         assert (await client.post(f"/api/v1/runs/{runs[0]['id']}/undo")).json()["memories"] == 1
@@ -125,7 +125,7 @@ async def test_review_pagination_verdicts_and_deleted_targets(tmp_path):
         deleted_ids = []
         for index in range(65):
             memory_id = app.memory_repository.add(
-                "event", EICY, "", f"待确认内容 {index}", status="candidate", origin="digest"
+                "event", PERSON_A, "", f"待确认内容 {index}", status="candidate", origin="digest"
             )
             app.review.add("memory_candidate", memory_id, f"需要确认 {index}")
             if index in (0, 40):
@@ -174,7 +174,7 @@ async def test_review_pagination_verdicts_and_deleted_targets(tmp_path):
             assert (await client.get("/api/v1/review")).json() == []
             assert (await client.get("/api/v1/status")).json()["counts"]["review_open"] == 0
 
-            memory_id = app.memory_repository.add("event", EICY, "", "已删除的目标")
+            memory_id = app.memory_repository.add("event", PERSON_A, "", "已删除的目标")
             app.review.add("memory_unverified", memory_id, "需要确认")
             app.memory_repository.delete_memory(memory_id)
             # Reading status first must also exclude invalid targets from the navigation count.
@@ -189,8 +189,8 @@ async def test_review_items_carry_their_chat_and_merge_duplicates(tmp_path):
     seed_known(app)
     try:
         start = time.time() - 3600
-        lines = [("qq:1", "甲", "今天好安静"), (EICY, "睡觉机", "某平台又要开杀了"),
-                 ("qq:2", "乙", "啥意思"), (EICY, "睡觉机", "大规模封号"), ("qq:2", "乙", "离谱")]
+        lines = [("qq:1", "甲", "今天好安静"), (PERSON_A, "睡觉机", "某平台又要开杀了"),
+                 ("qq:2", "乙", "啥意思"), (PERSON_A, "睡觉机", "大规模封号"), ("qq:2", "乙", "离谱")]
         for n, (uid, name, text) in enumerate(lines):
             app.messages.ingest({"id": f"m{n}", "user_id": uid, "name": name, "account": uid[3:],
                                  "source": "qq:group:9", "source_name": "测试群", "text": text,
@@ -205,16 +205,16 @@ async def test_review_items_carry_their_chat_and_merge_duplicates(tmp_path):
         app.review.add("glossary_guess", term, "没有搜到依据")
         assert [(i["kind"], i["reason"]) for i in app.review.open(10)] == [("glossary_guess", "没有搜到依据")]
         # Duplicates already in the queue collapse into the newest one when listed.
-        old = app.memory_repository.add("event", EICY, "", "阿白在做中转站", evidence=["m3"],
+        old = app.memory_repository.add("event", PERSON_A, "", "成员甲在做中转站", evidence=["m3"],
                                         status="candidate", confidence=0.4)
         with app.database.transaction() as connection:
             for kind in ("memory_candidate", "memory_unverified"):
                 connection.execute(
                     "INSERT INTO review_queue(kind,target,reason,priority,status,created) "
                     "VALUES(?,?,?,3,'open',?)", (kind, str(old), kind, time.time()))
-        app.memory_repository.add("impression", EICY, "", "阿白不吃辣", origin="curated")
-        app.people.repository.save_profile(EICY, "person", "运营中转站，不吃辣")
-        app.review.add("profile_new", EICY, "新的人物小结")
+        app.memory_repository.add("impression", PERSON_A, "", "成员甲不吃辣", origin="curated")
+        app.people.repository.save_profile(PERSON_A, "person", "运营中转站，不吃辣")
+        app.review.add("profile_new", PERSON_A, "新的人物小结")
 
         items = {i["kind"]: i for i in app.teach.review_items()}
         assert set(items) == {"glossary_guess", "memory_unverified", "profile_new"}
@@ -225,9 +225,9 @@ async def test_review_items_carry_their_chat_and_merge_duplicates(tmp_path):
         assert glossary["chat"][1]["speaker"] == "睡觉机" and glossary["chat"][1]["group"] == "测试群"
         assert [u["id"] for u in glossary["uses"]] == ["far"]
         memory = items["memory_unverified"]
-        assert memory["person"]["account"] == "9000000001" and "白宝" in memory["person"]["names"]
+        assert memory["person"]["account"] == "9000000001" and "小甲" in memory["person"]["names"]
         assert [c["id"] for c in memory["chat"] if c["cited"]] == ["m3"]
-        assert items["profile_new"]["memories"][0]["text"] in {"阿白在做中转站", "阿白不吃辣"}
+        assert items["profile_new"]["memories"][0]["text"] in {"成员甲在做中转站", "成员甲不吃辣"}
         assert len(items["profile_new"]["memories"]) == 2
 
         await app.teach.verdict(glossary["id"], "correct")

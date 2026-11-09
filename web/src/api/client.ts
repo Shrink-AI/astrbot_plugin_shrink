@@ -12,7 +12,10 @@ export async function api<T = unknown>(path: string, method = 'GET', data?: unkn
     },
     body: data ? (multipart ? data : JSON.stringify(data)) : undefined,
   });
-  const body = await response.json();
+  const raw = await response.text();
+  let body: any;
+  try { body = raw ? JSON.parse(raw) : {}; }
+  catch { body = { detail: response.ok ? '服务器返回的内容看不懂' : `服务器出错（${response.status}），稍后再试` }; }
   if(!response.ok) {
     if(response.status === 401 && path !== '/login') {
       csrf = '';

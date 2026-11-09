@@ -4,9 +4,16 @@ import time
 from ..api.app import create_app
 from ..application import Application
 from ..config import persona_prompt
+from ..prompts import text as prompt_text
 from ..runtime import DashboardServer
 from .conversation import ConversationAdapter
 from .providers import AstrBotProviders
+from .operations import Operations
+from .native_management import NativeManagement
+from .knowledge import KnowledgeBridge
+from .native_skills import NativeSkills
+from .public_api import PublicAPI
+from .plugin_protocol import CapabilityClient
 
 
 class PluginHost:
@@ -21,29 +28,37 @@ class PluginHost:
             self.bridge.sync_persona,
             self.bridge.search,
         )
+        def host_quotes(umo):
+            try:
+                settings = context.get_config(umo=umo or None)["platform_settings"]
+                return bool(settings.get("reply_with_quote"))
+            except Exception:
+                return False
+
         self.conversation = ConversationAdapter(
-            self.application, plugin_module, umos=self.bridge.umos
+            self.application, plugin_module, umos=self.bridge.umos, host_quotes=host_quotes
         )
         self.dashboard = None
         self.static_dir = static_dir
+        self.operations = Operations(context, self.application, static_dir.parent)
+        self.native = NativeManagement(context, self.application)
+        self.application.operations = self.operations
+        self.application.native = self.native
+        self.native_skills = NativeSkills(self.application, self.native)
+        self.application.native_skills = self.native_skills
+        self.knowledge = KnowledgeBridge(context, self.application)
+        self.application.knowledge = self.knowledge
+        self.application.memory.knowledge = self.knowledge
+        self.application.digests.resolve = lambda rows: self.knowledge.resolve(rows, "digests")
+        self.application.plugin_bus = CapabilityClient()
+        self.public_api = PublicAPI(self)
 
     async def start(self, active_plugins):
         app = self.application
         try:
-            conflicts = {
-                "astrbot_plugin_group_chat_plus",
-                "astrbot_plugin_livingmemory",
-                "astrbot_plugin_self_learning",
-            }.intersection(active_plugins)
-            if conflicts:
-                raise RuntimeError(
-                    "Disable conflicting plugins before enabling Shrink: " + str(sorted(conflicts))
-                )
             if not app.state.get("active_persona"):
                 app.state.put("original_persona", await self.bridge.original_persona())
-                app.persona_repository.add_version(
-                    "随和，接话自然，有自己的想法，不刻意卖萌。", [], "初始人格"
-                )
+                app.persona_repository.add_version(prompt_text("persona.initial"), [], "初始人格")
             await self.bridge.sync_persona(persona_prompt(app.persona_repository.learned_persona()))
             app.state.put(
                 "persona_sync",
@@ -58,6 +73,9 @@ class PluginHost:
             )
             await self.dashboard.start()
             app.start()
+            app.tasks.spawn(self.knowledge.start())
+            app.tasks.spawn(self.native_skills.start())
+            app.tasks.spawn(self.operations.deployments.start())
         except BaseException:
             await self.close()
             raise
@@ -68,4 +86,9 @@ class PluginHost:
             if self.dashboard:
                 await self.dashboard.close()
         finally:
-            await self.application.close()
+            try:
+                await self.knowledge.close()
+                await self.native_skills.close()
+                await self.operations.close()
+            finally:
+                await self.application.close()

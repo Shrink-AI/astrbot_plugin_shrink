@@ -45,6 +45,7 @@ class MemoryService:
     def __init__(self, repository, state, embed, error, people=None, review=None):
         self.repository, self.state, self.embed, self.error = repository, state, embed, error
         self.people, self.review = people, review
+        self.knowledge = None
 
     async def vector(self, text):
         try:
@@ -172,8 +173,13 @@ class MemoryService:
         vector = await self.vector(text) if text.strip() else None
         people = [query.speaker, *query.mentioned]
         candidates = {}
-        for row in self.repository.fts(query_grams):
-            candidates[row["id"]] = row
+        if self.knowledge and text.strip():
+            for row in await self.knowledge.candidates(text):
+                candidates[row["id"]] = row
+        fallback = not self.knowledge or not self.knowledge.retrieval_ok
+        if fallback:
+            for row in self.repository.fts(query_grams):
+                candidates[row["id"]] = row
         for row in self.repository.by_people(
             [p for p in dict.fromkeys(people + query.window) if p], 80
         ):
@@ -181,18 +187,23 @@ class MemoryService:
         terms = {t: i for t, i in self.repository.glossary_terms().items() if t in text}
         for row in self.repository.many(list(terms.values())):
             candidates.setdefault(row["id"], row)
-        if vector:
+        if vector and fallback:
             for memory_id in self._nearest(vector, 40):
                 if memory_id not in candidates:
                     row = self.repository.get(memory_id)
                     if row:
                         candidates[memory_id] = row
         scored = []
-        for row in candidates.values():
+        rows = list(candidates.values())
+        if self.knowledge:
+            rows = self.knowledge.resolve(rows)
+        for row in rows:
             score = self._score(row, query, vector, query_grams, terms, now)
             if score >= THRESHOLD:
                 scored.append((score, row))
         scored.sort(key=lambda x: x[0], reverse=True)
+        if self.knowledge:
+            scored = await self.knowledge.rerank(text, scored)
         chosen, per_subject, used = [], {}, 0
         for score, row in scored:
             key = row["subject"] or row["kind"]
@@ -325,6 +336,8 @@ class MemoryService:
             r for r in self.repository.search(kind="lesson", status="active", limit=limit * 2)
             if not r["valid_until"] or r["valid_until"] > time.time()
         ]
+        if self.knowledge:
+            rows = self.knowledge.resolve(rows)
         return "\n".join("- " + r["text"] for r in rows[:limit])
 
     def known_for(self, uids, per_person=4):
@@ -333,7 +346,10 @@ class MemoryService:
         for uid in uids:
             if uid == "self":
                 continue
-            for row in self.repository.for_subject(uid, limit=per_person):
+            rows = self.repository.for_subject(uid, limit=per_person)
+            if self.knowledge:
+                rows = self.knowledge.resolve(rows)
+            for row in rows:
                 ref = f"k{len(refs) + 1}"
                 refs[ref] = row
                 name = self.people.display(uid) if self.people else uid

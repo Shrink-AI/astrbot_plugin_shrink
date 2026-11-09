@@ -73,4 +73,12 @@ class Participation:
         return "quiet"
 
 
-__all__ = ["Participation", "OTHER", "SELF"]
+def should_quote(turn, newer_messages):
+    """Quote the message being answered when it is no longer obvious which one that is."""
+    if turn.private:
+        return False
+    # Chiming in needs an anchor; otherwise quote only once others have spoken since.
+    return turn.reason == "spontaneous" or newer_messages > 0
+
+
+__all__ = ["Participation", "OTHER", "SELF", "should_quote"]

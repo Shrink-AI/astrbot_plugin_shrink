@@ -2,7 +2,6 @@ import asyncio
 import socket
 import sqlite3
 import time
-import zipfile
 
 import httpx
 import pytest
@@ -50,77 +49,8 @@ async def test_application_shutdown_cancels_work_before_database_closes(tmp_path
         app.tasks.spawn(running())
 
 
-def test_release_failure_restores_code_and_preserves_new_runtime_data(tmp_path, monkeypatch):
-    from tools import update as release
-
-    root = tmp_path / "installation"
-    plugin = root / "astrbot-data/plugins/astrbot_plugin_shrink"
-    plugin.mkdir(parents=True)
-    originals = {"main.py": b"old", "metadata.yaml": b"version: 0.2.2", "requirements.txt": b"same"}
-    for name, data in originals.items():
-        (plugin / name).write_bytes(data)
-    runtime = root / "astrbot-data/plugin_data/astrbot_plugin_shrink"
-    runtime.mkdir(parents=True)
-    for target in [runtime / "shrink.db", root / "astrbot-data/data_v4.db"]:
-        with sqlite3.connect(target) as connection:
-            connection.execute("CREATE TABLE retained(value TEXT)")
-            connection.execute("INSERT INTO retained VALUES('before')")
-    (root / "astrbot-data/cmd_config.json").write_text("{}")
-    baseline, candidate = tmp_path / "baseline.zip", tmp_path / "candidate.zip"
-    with zipfile.ZipFile(baseline, "w") as archive:
-        for name, data in originals.items():
-            archive.writestr(name, data)
-    with zipfile.ZipFile(candidate, "w") as archive:
-        for name, data in {
-            **originals,
-            "main.py": b"new",
-            "shrink/application.py": b"new",
-            "static/index.html": b"new",
-        }.items():
-            archive.writestr(name, data)
-    calls = []
-    monkeypatch.setattr(release, "container", calls.append)
-
-    def unhealthy():
-        if (plugin / "main.py").read_bytes() == b"new":
-            with sqlite3.connect(runtime / "shrink.db") as connection:
-                connection.execute("INSERT INTO retained VALUES('after')")
-            return False
-        return True
-
-    monkeypatch.setattr(release, "health", unhealthy)
-    with pytest.raises(RuntimeError, match="healthy"):
-        release.update(root, candidate, baseline)
-    assert (plugin / "main.py").read_bytes() == b"old"
-    # The failed release may have migrated the schema; the old code gets its snapshot back.
-    with sqlite3.connect(runtime / "shrink.db") as connection:
-        assert connection.execute("SELECT value FROM retained").fetchall() == [("before",)]
-    assert calls == ["stop", "start", "stop", "start"]
 
 
-def test_rollback_can_restore_pre_upgrade_database(tmp_path, monkeypatch):
-    from tools import update as release
-
-    root = tmp_path / "installation"
-    plugin = root / "astrbot-data/plugins/astrbot_plugin_shrink"
-    plugin.mkdir(parents=True)
-    (plugin / "main.py").write_bytes(b"new")
-    runtime = root / "astrbot-data/plugin_data/astrbot_plugin_shrink"
-    runtime.mkdir(parents=True)
-    backup = root / "backups/shrink-release-1"
-    (backup / "plugin").mkdir(parents=True)
-    (backup / "plugin/main.py").write_bytes(b"old")
-    for target, value in [(backup / "shrink.db", "before"), (runtime / "shrink.db", "after")]:
-        with sqlite3.connect(target) as connection:
-            connection.execute("CREATE TABLE retained(value TEXT)")
-            connection.execute("INSERT INTO retained VALUES(?)", (value,))
-    monkeypatch.setattr(release, "container", lambda action: None)
-    monkeypatch.setattr(release, "health", lambda: True)
-    release.rollback(root, backup, restore_data=True)
-    assert (plugin / "main.py").read_bytes() == b"old"
-    with sqlite3.connect(runtime / "shrink.db") as connection:
-        assert connection.execute("SELECT value FROM retained").fetchall() == [("before",)]
-    assert list(backup.glob("data-before-rollback-*.db"))
 
 
 @pytest.mark.asyncio

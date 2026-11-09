@@ -26,7 +26,11 @@ from .services.expression import ExpressionService
 from .services.glossary import GlossaryService
 from .services.learning import LearningService
 from .services.memes import MemeService
+from .services.prompts import PromptService
+from .persistence.prompts import PromptRepository
 from .services.memory import MemoryService
+from .services.materials import Materials
+from .services.attachments import Attachments
 from .services.participation import Participation
 from .services.people import PeopleService
 from .services.persona import PersonaService
@@ -62,6 +66,7 @@ class Application:
             self.review = ReviewRepository(self.database)
             self.teach_repository = TeachRepository(self.database)
             self.skill_repository = SkillRepository(self.database)
+            self.prompt_repository = PromptRepository(self.database)
             self.status = StatusRepository(self.database, self.state, self.learning_repository)
             self.tasks = Tasks(self.state)
             error = self.tasks.error
@@ -70,6 +75,8 @@ class Application:
                 self.memory_repository, self.state, embed, error, self.people, self.review
             )
             self.persona = PersonaService(self.persona_repository, self.state, sync_persona)
+            self.prompts = PromptService(self.prompt_repository, self.persona)
+            self.prompts.load()
             self.context = ContextService(self.state, self.messages, self.digests, self.people)
             self.participation = Participation(
                 self.state, self.messages.last_bot_reply_to, self.interest
@@ -77,6 +84,8 @@ class Application:
             self.expression = ExpressionService(
                 self.state, self.persona_repository, self.expressions, model, error
             )
+            self.materials = Materials(self)
+            self.attachments = Attachments(self)
             self.glossary = GlossaryService(self.state, self.memory, search, model, error, self.review)
             self.consolidation = ConsolidationService(
                 state=self.state, messages=self.messages, digests=self.digests, people=self.people,
@@ -135,6 +144,7 @@ class Application:
             self.learning_repository.recover_interrupted()
             self.runs.recover_interrupted()
             self.tasks.spawn(self.scheduler.run())
+            self.attachments.resume()
             self.started = True
 
     async def close(self):

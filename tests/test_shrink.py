@@ -9,7 +9,7 @@ import httpx
 import pytest
 from PIL import Image
 
-from shrink.config import FIXED_PERSONA
+from shrink.config import fixed_persona
 from shrink.services.memes import inspect_image
 from shrink.services.expression import wants_detail
 from shrink.services.perception import Turn
@@ -44,7 +44,7 @@ async def embedding(text):
 
 
 async def sync_persona(text):
-    assert FIXED_PERSONA in text
+    assert fixed_persona() in text
 
 
 async def model(prompt, system="", images=None):
@@ -113,6 +113,8 @@ async def test_finishing_and_detail(store):
     assert wants_detail("为什么会报错")
     assert not wants_detail("刚把代码改没了")
     assert not wants_detail("简单用一句话解释")
+    assert wants_detail("示例项目还有哪些没做完的，列一下")
+    assert wants_detail("把清单发我")
     calls = []
 
     async def broken(*args):
@@ -131,13 +133,48 @@ async def test_finishing_and_detail(store):
     )
     assert leaked.text == ""
     skipped = await service.expression.finish(
-        "[[skip]]", user_text="白宝在吗", form="short", reason="spontaneous", recent=[]
+        "[[skip]]", user_text="小甲在吗", form="short", reason="spontaneous", recent=[]
     )
     assert skipped.skip
     direct = await service.expression.finish(
         "[[skip]]嗯", user_text="石英在吗", form="tiny", reason="direct", recent=[]
     )
     assert not direct.skip and direct.text == "嗯"
+
+
+@pytest.mark.asyncio
+async def test_tool_result_preserves_task_summary(store):
+    async def must_not_rewrite(*args):
+        raise AssertionError("Task results must not go through chat shortening")
+
+    store.expression.model = must_not_rewrite
+    text = "看板上未归档且没做完的还有5项：\n" + "\n".join(
+        f"SYD--0{i}：这里是必须完整保留的项目任务标题及状态说明" for i in range(5)
+    )
+    result = await store.expression.finish(
+        text, user_text="去crafttable帮我看一眼项目还有什么没做",
+        form="tool_result", reason="direct", recent=[],
+    )
+    assert result.text == text
+    assert not result.skip and not result.second
+    result = await store.expression.finish(
+        "<think>内部推理</think>" + text, user_text="查一下项目",
+        form="tool_result", reason="direct", recent=[],
+    )
+    assert result.text == text
+    result = await store.expression.finish(
+        "记上了，SYD-014。\n先挂三秋名下了。", user_text="帮我记一条",
+        form="tool_result", reason="direct", recent=[],
+    )
+    assert result.text == "记上了，SYD-014\n先挂三秋名下了"
+
+
+def test_turn_prompt_shows_task_reply_style():
+    from shrink.prompts.chat import fixed_persona, turn_prompt
+
+    prompt = turn_prompt(speaker="测试成员", form="detail")
+    assert "用了工具办事之后的回法" in prompt
+    assert "spaceId" in fixed_persona() and "不受短回复字数限制" not in fixed_persona()
 
 
 def test_participation_limit(store):
@@ -577,3 +614,13 @@ def test_v3_persistence_on_reopen(store):
         assert row["source"] == "qq:group:A" and row["origin"] == "curated"
     finally:
         other.database.close()
+
+
+def test_quote_only_when_the_target_is_ambiguous():
+    from shrink.services.participation import should_quote
+
+    direct = turn(reason="direct")
+    assert not should_quote(direct, 0)
+    assert should_quote(direct, 2)
+    assert should_quote(turn(reason="spontaneous"), 0)
+    assert not should_quote(turn(reason="spontaneous", private=True), 3)

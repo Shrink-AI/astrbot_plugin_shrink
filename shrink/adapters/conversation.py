@@ -18,23 +18,27 @@ from astrbot.api.message_components import (
 )
 from astrbot.core.message.message_event_result import MessageChain
 
-from ..config import BOT_NAME, FIXED_PERSONA, persona_prompt
-from ..services.expression import choose_form, wants_detail
+from ..config import BOT_NAME, fixed_persona, persona_prompt
+from ..prompts import render
+from ..prompts import text as prompt_text
+from ..services.expression import choose_form, settle_meme, wants_detail
+from ..services.execution_status import compose_timeout
 from ..services.memes import MAX_IMAGE_BYTES
 from ..services.memory import Query
+from ..services.participation import should_quote
 from ..services.perception import SELF, Turn, address
 from ..services.reply_text import drop_meta_sentences, humanize, strip_reasoning
 from ..services.skills import tool_step
+from ..services.debounce import Debouncer
 
 REPLY_REASONS = {"direct", "engaged", "spontaneous"}
-# The host's provider timeout does not bound a stalled relay connection, and a reply that
-# arrives minutes late is worse than none: give up on the whole turn (searches included).
+# The foreground has a short budget; authorized tool work continues in native subagents.
 REPLY_DEADLINE = 100
-GAVE_UP = "查半天没查出来，网页一直打不开"
-NO_TURN = "这个工具只能在群聊回复里用。"
 # People rarely attach a sticker to most messages; only sometimes offer the sticker list.
 MEME_OFFER = 0.35
 EXPLICIT_MEME = re.compile(r"表情|反应图|来张图|发张图")
+# Tools that only shape a chat reply; using them does not turn the answer into a task result.
+CHAT_TOOLS = {"shrink_find_meme"}
 
 
 class QQSticker(BaseMessageComponent):
@@ -46,10 +50,13 @@ class QQSticker(BaseMessageComponent):
 
 
 class ConversationAdapter:
-    def __init__(self, app, plugin_module, umos=None):
+    def __init__(self, app, plugin_module, umos=None, host_quotes=None):
         self.app = app
         self.plugin_module = plugin_module
         self.umos = umos if umos is not None else {}
+        # The host's own reply_with_quote setting quotes every reply after our hook runs.
+        self.host_quotes = host_quotes or (lambda umo: False)
+        self.debouncer = Debouncer()
 
     # ---- receive ---------------------------------------------------------------------------------
     def build_turn(self, event, platform, uid, source, group, message_id):
@@ -133,6 +140,7 @@ class ConversationAdapter:
             return
         if turn.umo:
             self.umos[source] = turn.umo
+        app.attachments.capture(turn, list(event.get_messages()))
         event.set_extra("shrink_turn", turn)
         cfg = app.state.settings
         if cfg.collect_enabled and group in cfg.collect_groups:
@@ -141,6 +149,35 @@ class ConversationAdapter:
                     app.memes.pending += 1
                     app.tasks.spawn(self.collect_image(comp, source))
         turn.reason = app.participation.decide(turn, random.random())
+        burst_key = (turn.umo or turn.source, turn.user_id)
+        if cfg.debounce_enabled and turn.addressee in ("", SELF) and (
+            turn.reason in REPLY_REASONS or burst_key in self.debouncer.pending
+        ):
+            burst = await self.debouncer.collect(
+                burst_key, turn.text, list(event.get_messages()), turn.reason,
+                quiet=cfg.debounce_seconds, maximum=cfg.debounce_max_seconds,
+            )
+            if burst is None:
+                event.stop_event()
+                return
+            turn.text = "\n".join(burst.texts)
+            if turn.reason not in REPLY_REASONS:
+                turn.reason = burst.reason
+            event.message_str = turn.text
+            event.message_obj.message_str = turn.text
+            event.message_obj.message = [Plain(turn.text)] + [
+                c for c in burst.components if not isinstance(c, Plain)
+            ]
+            event.set_extra("shrink_merged_messages", len(burst.texts))
+        if turn.reason in REPLY_REASONS:
+            reply = self.debouncer.begin(burst_key, turn.text, turn.reason)
+            if reply.text != turn.text:
+                # An older reply to this sender was still being written; this turn answers both.
+                turn.text, turn.reason = reply.text, reply.reason
+                event.message_str = turn.text
+                event.message_obj.message_str = turn.text
+                logger.info(f"Shrink merged in-flight reply source={source}")
+            event.set_extra("shrink_inflight", (burst_key, reply))
         event.set_extra("shrink_reply_reason", turn.reason)
         if turn.reason in REPLY_REASONS:
             logger.info(f"Shrink reply: {turn.reason} source={source}")
@@ -223,7 +260,7 @@ class ConversationAdapter:
             memes=choices,
             skills=app.skills.render(skills),
         )
-        if FIXED_PERSONA not in (req.system_prompt or ""):
+        if fixed_persona() not in (req.system_prompt or ""):
             req.system_prompt = (req.system_prompt or "") + "\n" + persona_prompt(
                 app.persona_repository.learned_persona()
             )
@@ -265,13 +302,70 @@ class ConversationAdapter:
         task.cancel()
         self.record_episode(event, "", "timeout")
         if turn and turn.reason in ("direct", "engaged"):
-            self.app.tasks.spawn(self.send_gave_up(event, turn))
+            self.app.tasks.spawn(self.continue_or_report(event, turn, task))
+
+    async def continue_or_report(self, event, turn, task):
+        # Wait for cancellation to unwind before continuing uncertain side effects.
+        try:
+            await asyncio.wait_for(asyncio.shield(task), 15)
+        except asyncio.CancelledError:
+            pass
+        except TimeoutError:
+            await self.send_gave_up(event, turn)
+            return
+        except Exception:
+            pass
+        operations = getattr(self.app, "operations", None)
+        steps = event.get_extra("shrink_tools") or []
+        if operations and event.is_admin():
+            try:
+                existing = event.get_extra("shrink_background_task")
+                if existing:
+                    row = operations.detail(existing)
+                    fact = f"后台任务{existing}实际状态：{row['status']}，主会话等待结束不会取消后台执行。"
+                elif steps:
+                    import json
+                    await operations.create_agent({
+                        "name": "shirnk_task_coordinator",
+                        "instructions": prompt_text("tasks.coordinator"),
+                        "tools": ["shrink_orchestrate"],
+                    })
+                    context = self.app.context.window(turn).text
+                    submitted = await operations.submit_agent(event, "shirnk_task_coordinator", render(
+                        "tasks.coordinator.request", request=turn.text, context=context[-6000:],
+                        steps=json.dumps(steps, ensure_ascii=False)[-16000:]))
+                    fact = f"已成功提交后台编排任务{submitted['task_id']}，子代理继续处理，完成后回传。尚未完成。"
+                else:
+                    await self.send_gave_up(event, turn)
+                    return
+                text = await asyncio.wait_for(self.app.expression.model(
+                    render("tasks.background_status", fact=fact),
+                    persona_prompt(self.app.persona_repository.learned_persona())), 20)
+                if text and text.strip():
+                    await asyncio.wait_for(event.send(MessageChain([Plain(text)])), 30)
+                    self.app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
+                return
+            except Exception as exc:
+                self.app.tasks.error("background_continuation", exc)
+        await self.send_gave_up(event, turn)
 
     async def send_gave_up(self, event, turn):
-        chain = MessageChain([Plain(GAVE_UP)])
+        try:
+            text = await compose_timeout(
+                self.app.expression.model,
+                persona_prompt(self.app.persona_repository.learned_persona()),
+                turn.text, event.get_extra("shrink_tools"), REPLY_DEADLINE,
+            )
+            text = strip_reasoning(text or "").strip()
+            if not text:
+                return
+        except Exception as exc:
+            self.app.tasks.error("timeout_status_reply", exc)
+            return
+        chain = MessageChain([Plain(text)])
         chain.use_markdown(False)
         await asyncio.wait_for(event.send(chain), 30)
-        self.app.messages.record_bot(turn.source, GAVE_UP, turn.user_id, turn.reason)
+        self.app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
 
     # ---- response --------------------------------------------------------------------------------
     async def response(self, event, response):
@@ -285,20 +379,34 @@ class ConversationAdapter:
             response.reasoning_content = ""
         if response.role == "err":
             app.tasks.error("chat", RuntimeError())
-            response.completion_text = "刚刚没接上，等会儿再试试" if turn.reason == "direct" else ""
+            response.completion_text = prompt_text("reply.error") if turn.reason == "direct" else ""
             self.record_episode(event, "", "error")
             return
+        form = event.get_extra("shrink_form", "short")
+        if self.did_work(event):
+            # Tool-backed answers carry results, not just conversational flavor.
+            form = "tool_result"
+            event.set_extra("shrink_form", form)
         finished = await app.expression.finish(
             response.completion_text or "",
             user_text=turn.text,
-            form=event.get_extra("shrink_form", "short"),
+            form=form,
             reason=turn.reason,
             recent=app.messages.recent_bot(turn.source, 3),
         )
-        event.set_extra("shrink_finished", finished)
-        self.record_episode(event, finished.text if not finished.skip else "[没有回复]", "ok")
         if finished.meme_id:
             event.set_extra("shrink_selected_meme", finished.meme_id)
+        if event.get_extra("shrink_selected_meme") and form != "tool_result" and not finished.skip:
+            text, keep = settle_meme(
+                finished.text, explicit=event.get_extra("shrink_meme_explicit", False),
+                reason=turn.reason,
+            )
+            if text != finished.text:
+                finished.text, finished.second = text, ""
+            if not keep:
+                event.set_extra("shrink_selected_meme", None)
+        event.set_extra("shrink_finished", finished)
+        self.record_episode(event, finished.text if not finished.skip else "[没有回复]", "ok")
         response.completion_text = finished.text
         if response.result_chain is not None:
             response.result_chain.chain = (
@@ -324,12 +432,18 @@ class ConversationAdapter:
             return
         turn = event.get_extra("shrink_turn")
         finished = event.get_extra("shrink_finished")
+        if not self.debouncer.commit(self.inflight(event)) and not self.did_work(event):
+            logger.info("Shrink dropped reply: a newer message from the same sender took over")
+            self.release(event)
+            result.chain = []
+            return
         if (finished and finished.skip) or self.stale(turn):
             logger.info(f"Shrink dropped reply: {'skip' if finished and finished.skip else 'stale'}")
+            self.release(event)
             result.chain = []
             return
         # on_llm_response is authoritative; this also covers nonstandard runner output.
-        detail = event.get_extra("shrink_form") == "detail" or wants_detail(turn.text)
+        detail = event.get_extra("shrink_form") in {"detail", "tool_result"} or wants_detail(turn.text)
         text = " ".join(
             t for t in (strip_reasoning(c.text) for c in result.chain if isinstance(c, Plain)) if t
         ).strip()
@@ -341,19 +455,44 @@ class ConversationAdapter:
         visible = [c for c in others if not isinstance(c, (At, Reply))]
         if not text and not visible:
             result.chain = []
+            self.release(event)
             if event.get_extra("shrink_selected_meme"):
                 # An empty result skips after_message_sent, so sticker-only replies send here.
                 event.set_extra("shrink_sent", True)
                 await self.send_meme(event)
             return
         result.chain = ([Plain(text)] if text else []) + others
+        if text and self.quotes(event, turn, result.chain):
+            result.chain.insert(0, Reply(id=event.message_obj.message_id))
         result.use_markdown(False)
         event.set_extra("shrink_text", text)
+
+    @staticmethod
+    def did_work(event):
+        return any(s.get("name") not in CHAT_TOOLS for s in event.get_extra("shrink_tools") or [])
+
+    @staticmethod
+    def inflight(event):
+        entry = event.get_extra("shrink_inflight")
+        return entry[1] if entry else None
+
+    def release(self, event):
+        entry = event.get_extra("shrink_inflight")
+        if entry:
+            self.debouncer.done(*entry)
+
+    def quotes(self, event, turn, chain):
+        if any(isinstance(c, Reply) for c in chain) or not event.message_obj.message_id:
+            return False
+        if self.host_quotes(turn.umo):
+            return False
+        return should_quote(turn, self.app.messages.count_since(turn.source, turn.created))
 
     async def sent(self, event):
         if not event.get_extra("shrink_reply") or event.get_extra("shrink_sent"):
             return
         event.set_extra("shrink_sent", True)
+        self.release(event)
         app, turn = self.app, event.get_extra("shrink_turn")
         text = event.get_extra("shrink_text", "")
         if turn and text:
@@ -404,9 +543,24 @@ class ConversationAdapter:
 
     # ---- experience ------------------------------------------------------------------------------
     def tool_used(self, event, tool, args, result):
+        from ..services.task_context import CURRENT_TASK
+        if CURRENT_TASK.get():
+            import json
+            operations = getattr(self.app, "operations", None)
+            if operations:
+                content = getattr(result, "content", None) or []
+                text = " ".join(str(getattr(c, "text", "") or "") for c in content) or str(result or "")
+                operations.record("tool:" + getattr(tool, "name", str(tool)),
+                                  result=json.dumps({"arguments": args, "result": text}, ensure_ascii=False, default=str))
+            return
         tools = event.get_extra("shrink_tools")
         if tools is None or not event.get_extra("shrink_reply"):
             return
+        name = getattr(tool, "name", str(tool))
+        reply = self.inflight(event)
+        if reply is not None and name not in CHAT_TOOLS:
+            # Work was done on the user's behalf; its result must be reported, not withdrawn.
+            reply.committed = True
         content = getattr(result, "content", None) or []
         text = " ".join(str(getattr(c, "text", "") or "") for c in content) or str(result or "")
         tools.append(tool_step(getattr(tool, "name", str(tool)), args, text))
@@ -428,26 +582,26 @@ class ConversationAdapter:
     async def remember(self, event, text: str):
         turn = event.get_extra("shrink_turn")
         if not turn or not re.search(r"记住|记一下|记着|别忘|remember", turn.text, re.I):
-            return "本轮没有明确要求记忆，请不要声称已经记住。"
+            return prompt_text("toolret.remember_unasked")
         if not text or len(text) > 1000:
             return "记忆长度无效。"
         memory_id, status = await self.app.memory.remember(turn.record(), text)
         if memory_id:
             self.app.tasks.spawn(self.app.memory.index_memory(memory_id))
         if status == "candidate":
-            return "已暂存，涉及其他人的内容需要管理员确认后才会使用。"
-        return "已保存，附有用户账号、来源和原话。"
+            return prompt_text("toolret.remember_candidate")
+        return prompt_text("toolret.remember_saved")
 
     async def chat_history(self, event, keyword="", person="", days=3):
         turn = event.get_extra("shrink_turn")
         if not turn:
-            return NO_TURN
+            return prompt_text("toolret.no_turn")
         return self.app.tools.history(turn.source, keyword, person, days)
 
     async def lookup(self, event, query):
         turn = event.get_extra("shrink_turn")
         if not turn:
-            return NO_TURN
+            return prompt_text("toolret.no_turn")
         return await self.app.tools.lookup(
             query, source=turn.source, speaker=turn.user_id, private=turn.private
         )
@@ -455,15 +609,15 @@ class ConversationAdapter:
     async def find_meme(self, event, keyword):
         turn = event.get_extra("shrink_turn")
         if not turn:
-            return NO_TURN
+            return prompt_text("toolret.no_turn")
         row = self.app.tools.find_meme(keyword)
         if not row:
-            return f"表情库里没有和“{keyword}”对得上的表情，别发了，用文字回就行。"
+            return render("toolret.meme_missing", keyword=keyword)
         event.set_extra("shrink_selected_meme", row["id"])
         event.set_extra("shrink_meme_found", row["id"])
-        return f"找到了「{row['title']}」，会跟在你这句话后面发出去。文字可以很短，也可以不写。"
+        return render("toolret.meme_found", title=row['title'])
 
     async def run_python(self, event, code):
         if not event.get_extra("shrink_turn"):
-            return NO_TURN
+            return prompt_text("toolret.no_turn")
         return await self.app.tools.run_python(code)

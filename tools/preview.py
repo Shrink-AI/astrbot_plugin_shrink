@@ -16,11 +16,11 @@ from shrink.api.app import create_app  # noqa: E402
 
 GROUP = "qq:group:9100000001"
 PEOPLE = {
-    "qq:9000000001": "阿白",
+    "qq:9000000001": "成员甲",
     "qq:9000000004": "小林",
     "qq:9000000003": "小周",
     "qq:9000000002": "小机",
-    "qq:9000000007": "Yu",
+    "qq:9000000007": "成员丙",
 }
 
 
@@ -47,7 +47,7 @@ def seed(app):
         return
     now = time.time()
     lines = [
-        ("qq:9000000004", "白宝你那个rust项目跑通没", "qq:9000000001"),
+        ("qq:9000000004", "小甲你那个rust项目跑通没", "qq:9000000001"),
         ("qq:9000000001", "跑通了 就是缓存占了20g 难蚌", ""),
         ("qq:9000000003", "对 下周去上海 待三天", ""),
         ("qq:9000000002", "小周要去上海出差", ""),
@@ -64,9 +64,9 @@ def seed(app):
         })
     run = app.runs.start("digest", GROUP)
     repo = app.memory_repository
-    repo.add("event", "qq:9000000001", GROUP, "阿白在做一个rust项目，已经跑通", quote="跑通了 就是缓存占了20g",
+    repo.add("event", "qq:9000000001", GROUP, "成员甲在做一个rust项目，已经跑通", quote="跑通了 就是缓存占了20g",
              evidence=["preview-1"], importance=3, confidence=0.75, origin="digest", run_id=run)
-    repo.add("topic", "", GROUP, "阿白的rust项目缓存占了20G", participants=["qq:9000000004", "qq:9000000001"],
+    repo.add("topic", "", GROUP, "成员甲的rust项目缓存占了20G", participants=["qq:9000000004", "qq:9000000001"],
              quote="缓存占了20g", evidence=["preview-0", "preview-1"], origin="digest", run_id=run)
     candidate = repo.add("impression", "qq:9000000003", GROUP, "小周经常出差", certainty="inferred",
                          confidence=0.5, status="candidate", evidence=["preview-2"], origin="digest", run_id=run)
@@ -83,7 +83,7 @@ def seed(app):
     app.review.add("glossary_guess", slang, "没有搜到依据，按群里用法推测的释义")
     app.review.add("memory_candidate", candidate, "置信度不足，等待印证或确认")
     app.review.add("nickname_guess", nid, "推断的称呼，等待确认")
-    app.digests.add(GROUP, now - 4000, now - 3880, 5, "小林问阿白的rust项目，阿白说跑通了但缓存很大；小周下周去上海出差。", run)
+    app.digests.add(GROUP, now - 4000, now - 3880, 5, "小林问成员甲的rust项目，成员甲说跑通了但缓存很大；小周下周去上海出差。", run)
     app.runs.finish(run, "success", {"messages": 5, "accepted": {"event": 1, "topic": 1},
                                      "rejected": {"memories:joke": 1, "memories:bot_only_evidence": 1},
                                      "outcomes": {"created": 4}}, "演示数据")
@@ -96,7 +96,7 @@ def seed(app):
                             user_id="qq:9000000001", source=GROUP, created=now - 3000)
     app.messages.ingest({
         "id": "preview-9", "platform": "qq", "account": "9000000001", "user_id": "qq:9000000001",
-        "name": "阿白", "source": GROUP, "source_name": "9100000001",
+        "name": "成员甲", "source": GROUP, "source_name": "9100000001",
         "text": "那都哪几场，链接给一下", "created": now - 2880, "addressee": "self",
     })
     episode = app.skills.record(asker, [

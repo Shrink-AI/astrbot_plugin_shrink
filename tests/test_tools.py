@@ -18,8 +18,8 @@ from shrink.services.skills import SETTLE_SECONDS, tool_step
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "sandbox"))
 import server as sandbox  # noqa: E402
 
-EICY, FAN, SANQIU = "qq:9000000001", "qq:9000000004", "qq:9000000003"
-NAMES = {EICY: "阿白", FAN: "小林", SANQIU: "小周"}
+PERSON_A, FAN, SANQIU = "qq:9000000001", "qq:9000000004", "qq:9000000003"
+NAMES = {PERSON_A: "成员甲", FAN: "小林", SANQIU: "小周"}
 G, H = "qq:group:111", "qq:group:222"
 
 
@@ -60,7 +60,7 @@ def say(app, key, uid, text, source=G, ago=3600, addressee=""):
     })
 
 
-def turn(text, uid=EICY, source=G, created=None, key="t1"):
+def turn(text, uid=PERSON_A, source=G, created=None, key="t1"):
     return SimpleNamespace(
         id=key, text=text, user_id=uid, source=source, created=created or time.time() - 80,
     )
@@ -70,7 +70,7 @@ def turn(text, uid=EICY, source=G, created=None, key="t1"):
 def test_history_finds_keyword_with_neighbours_and_stays_in_this_chat(app):
     say(app, "h1", FAN, "有人有 gamejam 报名链接吗", ago=7200)
     say(app, "h2", SANQIU, "https://spotlight.taptap.cn/jam", ago=7190)
-    say(app, "h3", EICY, "谢了", ago=7180)
+    say(app, "h3", PERSON_A, "谢了", ago=7180)
     say(app, "h4", FAN, "gamejam 的链接在别的群", source=H, ago=7000)
     out = app.tools.history(G, keyword="gamejam")
     assert "→ [" in out and "报名链接" in out
@@ -80,7 +80,7 @@ def test_history_finds_keyword_with_neighbours_and_stays_in_this_chat(app):
 
 def test_history_by_person_and_empty_results(app):
     say(app, "p1", FAN, "今晚吃火锅", ago=600)
-    say(app, "p2", EICY, "我也想吃", ago=500)
+    say(app, "p2", PERSON_A, "我也想吃", ago=500)
     out = app.tools.history(G, person="小林", days=1)
     assert "火锅" in out and "我也想吃" not in out
     assert "没找到" in app.tools.history(G, person="不存在的人")
@@ -100,11 +100,11 @@ def test_history_without_filters_includes_summaries(app):
 
 # ---- lookup -------------------------------------------------------------------------------------
 async def test_lookup_returns_card_lines_and_memories(app):
-    say(app, "l1", EICY, "我在写 rust", ago=300)
-    app.memory_repository.add("impression", EICY, G, "阿白是程序员", origin="curated")
-    out = await app.tools.lookup("阿白", source=G, speaker=FAN, private=False)
-    assert "这个人 阿白" in out and "9000000001" in out
-    assert "我在写 rust" in out and "阿白是程序员" in out
+    say(app, "l1", PERSON_A, "我在写 rust", ago=300)
+    app.memory_repository.add("impression", PERSON_A, G, "成员甲是程序员", origin="curated")
+    out = await app.tools.lookup("成员甲", source=G, speaker=FAN, private=False)
+    assert "这个人 成员甲" in out and "9000000001" in out
+    assert "我在写 rust" in out and "成员甲是程序员" in out
     assert "没有关于" in await app.tools.lookup("火星移民", source=G, speaker=FAN, private=False)
 
 
@@ -188,7 +188,7 @@ def _episode(app, text="帮我查查 taptap 今年办了哪些 gamejam", tools=S
 
 async def test_reflection_creates_then_revises_know_how(app):
     first = _episode(app)
-    say(app, "f1", EICY, "那都哪几场，链接给一下", ago=SETTLE_SECONDS - 30, addressee="self")
+    say(app, "f1", PERSON_A, "那都哪几场，链接给一下", ago=SETTLE_SECONDS - 30, addressee="self")
     app.model.results.append({
         "verdict": "bad", "lesson": "搜了好几轮才找到官网", "action": "create",
         "title": "查 TapTap 聚光灯 GameJam", "when": "有人问 TapTap 办过哪些 gamejam 或聚光灯活动",
@@ -220,14 +220,14 @@ async def test_reflection_creates_then_revises_know_how(app):
     assert detail["version"] == 2 and detail["uses"] == 1 and detail["wins"] == 1
     assert [v["reason"] for v in detail["versions"]] == ["补上只列今年", "这次绕了远路"]
     assert {e["id"] for e in detail["episodes"]} == {first, second}
-    assert detail["episodes"][0]["user_name"] == "阿白"
+    assert detail["episodes"][0]["user_name"] == "成员甲"
 
 
 async def test_reflection_rejects_private_or_malformed_know_how(app):
     _episode(app)
     app.model.results.append({
-        "verdict": "good", "action": "create", "title": "找 阿白",
-        "when": "有人找 阿白", "steps": "1. 直接 at qq 9000000001", "reason": "-",
+        "verdict": "good", "action": "create", "title": "找 成员甲",
+        "when": "有人找 成员甲", "steps": "1. 直接 at qq 9000000001", "reason": "-",
     })
     _episode(app)
     app.model.results.append({"verdict": "good", "action": "create", "title": "", "when": "x",

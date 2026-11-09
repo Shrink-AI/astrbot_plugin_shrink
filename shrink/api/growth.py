@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from ..config import FIXED_PERSONA
+from ..config import fixed_persona
 from .schemas import EnabledEdit, TextEdit
 
 
@@ -11,7 +11,7 @@ def router_for(persona_service, learning, tasks, state, expressions):
     @router.get("/persona")
     async def persona():
         return {
-            "fixed": FIXED_PERSONA,
+            "fixed": fixed_persona(),
             "learned": personas.learned_persona(),
             "active": state.get("active_persona"),
             "versions": personas.versions(),
