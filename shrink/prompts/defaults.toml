@@ -625,7 +625,7 @@ text = '''
 按任务自行创建原生子代理并编排后台执行。先guide/tools，再create和submit；后台自动回报。
 
 参数：
-action：guide/tools/create/submit/list/status/resume/cancel。
+action：guide/tools/create/submit/list/status/resume/cancel；省略时只返回guide用法，不创建或提交任务。
 arguments：JSON对象；create指定name,instructions,tools,provider_id；submit指定agent,request,depends_on；其他操作见guide。'''
 
 ["tool.shrink_native_manage"]

@@ -7,6 +7,7 @@ import pytest
 
 from shrink.adapters.operations import Operations, CURRENT_TASK
 from shrink.persistence.database import Database
+from shrink.adapters.agent_tasks import AgentTasks
 
 
 class Event:
@@ -43,6 +44,88 @@ def runtime(tmp_path):
 
 async def create(op, name='researcher'):
     return await op.create_agent({'name': name, 'instructions': '读取并总结资料', 'tools': ['read_source']})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase,expected', [('compose', 'interrupted'), ('send', 'unknown')])
+async def test_delivery_cancellation_is_persisted(runtime, monkeypatch, phase, expected):
+    import sys
+    op, event, _ = runtime
+    await create(op)
+    op.invoke_agent = AsyncMock(return_value='completed facts')
+    submitted = await op.submit_agent(event, 'researcher', 'test')
+    await op.running[submitted['task_id']]
+    monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
+    entered = asyncio.Event()
+    async def wait(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    op.app.expression = SimpleNamespace(model=AsyncMock(side_effect=wait) if phase == 'compose' else AsyncMock(return_value='result'))
+    op.context.send_message = AsyncMock(side_effect=wait)
+    task = asyncio.create_task(AgentTasks.deliver_agent_result(op, submitted['task_id'], event))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert op.detail(submitted['task_id'])['delivery'] == expected
+    if phase == 'compose':
+        op.context.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_accepted_result_is_not_sent_twice(runtime, monkeypatch):
+    import sys
+    op, event, _ = runtime
+    await create(op)
+    op.invoke_agent = AsyncMock(return_value='completed facts')
+    submitted = await op.submit_agent(event, 'researcher', 'test')
+    await op.running[submitted['task_id']]
+    monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
+    op.app.expression = SimpleNamespace(model=AsyncMock(return_value='result'))
+    op.context.send_message = AsyncMock(return_value=True)
+    await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)
+    await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)
+    assert op.detail(submitted['task_id'])['delivery'] == 'platform_accepted'
+    op.context.send_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('delivery', ['sending', 'unknown'])
+async def test_redelivery_rejects_uncertain_platform_result(runtime, delivery):
+    op, event, _ = runtime
+    await create(op)
+    op.invoke_agent = AsyncMock(return_value='completed facts')
+    submitted = await op.submit_agent(event, 'researcher', 'test')
+    task_id = submitted['task_id']
+    await op.running[task_id]
+    with op.database.transaction() as con:
+        con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (delivery, task_id))
+    op.deliver_agent_result.reset_mock()
+    with pytest.raises(ValueError, match='发送结果不明'):
+        await op.redeliver_agent_result(task_id, event)
+    op.deliver_agent_result.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_redelivery_uses_existing_result_and_enforces_session(runtime):
+    op, event, _ = runtime
+    await create(op)
+    op.invoke_agent = AsyncMock(return_value='completed facts')
+    submitted = await op.submit_agent(event, 'researcher', 'test')
+    task_id = submitted['task_id']
+    await op.running[task_id]
+    op.deliver_agent_result.reset_mock()
+    other = Event()
+    other.unified_msg_origin = 'qq:GroupMessage:other'
+    with pytest.raises(ValueError, match='当前会话'):
+        await op.redeliver_agent_result(task_id, other)
+    await op.redeliver_agent_result(task_id, event)
+    op.deliver_agent_result.assert_awaited_once_with(task_id, event)
+    op.invoke_agent.assert_awaited_once()
+    assert len(op.list()) == 1
+    assert op.detail(task_id)['result'] == 'completed facts'
 
 
 @pytest.mark.asyncio

@@ -26,7 +26,7 @@ class ShrinkPlugin(Star):
 
         required = {"shirnk_plugin_workbench": ["action"],
                     "shrink_develop": ["request"],
-                    "shrink_orchestrate": ["action"],
+                    "shrink_orchestrate": [],
                     "shrink_native_manage": ["resource", "action"],
                     "shrink_plugin_capability": ["action"],
                     "shrink_curate_material": ["title", "source", "content"],
@@ -100,9 +100,11 @@ class ShrinkPlugin(Star):
 
     @filter.llm_tool(name="shrink_orchestrate")
     @tool_doc("shrink_orchestrate", action="string", arguments="string")
-    async def orchestrate(self, event: AstrMessageEvent, action: str, arguments: str = "{}"):
+    async def orchestrate(self, event: AstrMessageEvent, action: str = "guide", arguments: str = "{}"):
         import json
         try:
+            if not isinstance(action, str) or not action.strip():
+                raise ValueError("action必须是非空字符串；先用guide查看用法")
             parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
             result = await self.host.operations.orchestrate(event, action, parsed)
             self.host.operations.record("orchestrate:" + action, result=json.dumps(result, ensure_ascii=False))

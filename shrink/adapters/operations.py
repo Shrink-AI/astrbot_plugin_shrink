@@ -40,6 +40,8 @@ class Operations(AgentTasks):
         """)
         self.init_agents()
         with self.database.transaction() as con:
+            con.execute("UPDATE operation_tasks SET delivery='interrupted' WHERE delivery IN ('pending','composing')")
+            con.execute("UPDATE operation_tasks SET delivery='unknown' WHERE delivery='sending'")
             con.execute("UPDATE operation_tasks SET status='interrupted',finished=? "
                         "WHERE status IN ('queued','running','waiting','testing','deploying')", (time.time(),))
 

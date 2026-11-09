@@ -69,6 +69,11 @@ def router_for(app):
             previous["request"] + "\n继续已有草稿，先查看差异与上次结果：\n" + previous["result"],
             parent=task_id)
 
+    @router.post("/tasks/{task_id}/redeliver")
+    async def redeliver(task_id: str):
+        previous = app.operations.detail(task_id)
+        return await app.operations.redeliver_agent_result(task_id, event_for(previous['session']))
+
     @router.get("/capabilities")
     async def capabilities():
         return {"plugins": await app.native.call("plugins", "list"),

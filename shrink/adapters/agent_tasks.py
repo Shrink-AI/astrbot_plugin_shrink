@@ -278,15 +278,24 @@ class AgentTasks:
             with self.database.transaction() as con:
                 con.execute('UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?',
                             (status, result, time.time(), task_id))
+                if status != 'cancelled' and not row['parent']:
+                    con.execute("UPDATE operation_tasks SET delivery='pending' WHERE id=?", (task_id,))
             CURRENT_TASK.reset(token)
         if status != 'cancelled' and not row['parent']:
             await self.deliver_agent_result(task_id, event)
 
     async def deliver_agent_result(self, task_id, event):
         row = self.detail(task_id)
+        if row['delivery'] in {'platform_accepted', 'sending', 'unknown'}:
+            return
         # A downstream aggregation task owns the final response.
         if any(task_id in json.loads(r['dependencies']) for r in self.list() if r['kind'] == 'agent'):
+            with self.database.transaction() as con:
+                con.execute("UPDATE operation_tasks SET delivery='delegated' WHERE id=?", (task_id,))
             return
+        with self.database.transaction() as con:
+            con.execute("UPDATE operation_tasks SET delivery='composing' WHERE id=?", (task_id,))
+        sending = False
         try:
             from astrbot.api.message_components import Plain
             from astrbot.core.message.message_event_result import MessageChain
@@ -297,15 +306,41 @@ class AgentTasks:
                 text("tasks.agent_result.system")), 45)
             if not reply or not reply.strip():
                 raise ValueError('结果说明为空，原始结果已保留')
+            with self.database.transaction() as con:
+                con.execute("UPDATE operation_tasks SET delivery='sending' WHERE id=?", (task_id,))
+            sending = True
             accepted = await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)]))
             if not accepted:
                 raise RuntimeError('未找到原会话平台，未确认发送')
             delivery = 'platform_accepted'
+            with self.database.transaction() as con:
+                con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (delivery, task_id))
             turn = event.get_extra('shrink_turn')
             if turn:
                 self.app.messages.record_bot(turn.source, reply, turn.user_id, turn.reason)
+        except asyncio.CancelledError:
+            delivery = 'unknown' if sending else 'interrupted'
+            with self.database.transaction() as con:
+                con.execute("UPDATE operation_tasks SET delivery=? WHERE id=? AND delivery!='platform_accepted'", (delivery, task_id))
+            raise
         except Exception as exc:
-            delivery = f'failed: {type(exc).__name__}: {str(exc)[:1000]}'
+            delivery = 'unknown' if sending else f'failed: {type(exc).__name__}: {str(exc)[:1000]}'
             self.app.tasks.error('agent_result_delivery', exc)
         with self.database.transaction() as con:
-            con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (delivery, task_id))
+            con.execute("UPDATE operation_tasks SET delivery=? WHERE id=? AND delivery!='platform_accepted'", (delivery, task_id))
+
+    async def redeliver_agent_result(self, task_id, event):
+        if not event.is_admin():
+            raise ValueError('仅管理员可补发任务结果')
+        row = self.owned_task(event, task_id)
+        if row['kind'] != 'agent' or row['parent'] or row['status'] not in {'completed', 'needs_attention', 'timed_out'}:
+            raise ValueError('只能补发已结束的顶层代理任务结果')
+        if row['delivery'] in {'sending', 'unknown'}:
+            raise ValueError('发送结果不明，请先核对平台记录，不能直接重发')
+        active = self.running.get(task_id)
+        if active and not active.done():
+            raise ValueError('任务或结果发送仍在进行')
+        task = asyncio.create_task(self.deliver_agent_result(task_id, event))
+        self.running[task_id] = task
+        await asyncio.shield(task)
+        return {'task_id': task_id, 'delivery': self.detail(task_id)['delivery']}
