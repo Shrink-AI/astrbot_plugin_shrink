@@ -73,7 +73,7 @@ async def test_parallel_tool_calls_notify_once_and_persist_across_recreation(app
     notifications = Notifications(app)
     plugin = SimpleNamespace(host=SimpleNamespace(conversation=SimpleNamespace(notifications=notifications)))
     event = Event()
-    tool = SimpleNamespace(name="shrink_orchestrate")
+    tool = SimpleNamespace(name="astrbot_file_read_tool")
     await asyncio.gather(*(ToolNoticeHooks.notify_before_tool(plugin, event, tool, {}) for _ in range(5)))
     app.outbound.compose.assert_awaited_once()
     event.send.assert_awaited_once()
@@ -83,6 +83,19 @@ async def test_parallel_tool_calls_notify_once_and_persist_across_recreation(app
     await Notifications(app).send_once(fresh_event, "message-1:tools", {})
     fresh_event.send.assert_not_called()
     assert app.database.rows("SELECT state FROM notification_receipts")[0]["state"] == "platform_accepted"
+
+
+@pytest.mark.asyncio
+async def test_delegation_leaves_acceptance_to_final_reply(app, host_modules):
+    notices = Notifications(app)
+    plugin = SimpleNamespace(host=SimpleNamespace(conversation=SimpleNamespace(notifications=notices)))
+    event = Event()
+    for name in ("shrink_develop", "shrink_orchestrate"):
+        await ToolNoticeHooks.notify_before_tool(plugin, event, SimpleNamespace(name=name), {})
+    event.set_extra("shrink_background_task", "submitted-task")
+    await ToolNoticeHooks.notify_before_tool(plugin, event, SimpleNamespace(name="read"), {})
+    event.send.assert_not_called()
+    app.outbound.compose.assert_not_called()
 
 
 @pytest.mark.asyncio

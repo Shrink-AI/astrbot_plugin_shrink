@@ -10,7 +10,12 @@ class ToolNoticeHooks:
             raise RuntimeError("用户已停止本轮任务")
         if event.get_extra("shrink_tool_notice"):
             return
-        if getattr(tool, "name", "") == "shrink_find_meme":
+        name = getattr(tool, "name", "")
+        # Background submission returns immediately; its normal reply owns acceptance.
+        # Do not send a second "starting work" message before that receipt.
+        if name in {"shrink_find_meme", "shrink_develop", "shrink_orchestrate"}:
+            return
+        if event.get_extra("shrink_background_task"):
             return
         # Set before awaiting, so parallel tool calls share one notice.
         event.set_extra("shrink_tool_notice", True)
