@@ -197,7 +197,7 @@ class AgentTasks:
         # Same native runner as handoff, with explicit hooks so partial writes survive timeouts.
         response = await self.context.tool_loop_agent(
             event=event, chat_provider_id=handoff.provider_id, prompt=request,
-            system_prompt=handoff.agent.instructions, tools=tools,
+            system_prompt=handoff.agent.instructions + '\n' + prompt_text('skills.authoring'), tools=tools,
             contexts=handoff.agent.begin_dialogs or [], max_steps=128,
             tool_call_timeout=180, agent_hooks=AuditHooks(), stream=False)
         if getattr(response, 'role', '') == 'err':
@@ -299,25 +299,22 @@ class AgentTasks:
         try:
             from astrbot.api.message_components import Plain
             from astrbot.core.message.message_event_result import MessageChain
-            from ..prompts import render, text
-            reply = await asyncio.wait_for(self.app.expression.model(
-                render("tasks.agent_result", request=row['request'], status=row['status'],
-                       result=row['result']),
-                text("tasks.agent_result.system")), 45)
+            scope = {'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())}
+            reply = await self.app.outbound.compose(row['result'], request=row['request'],
+                kind='agent_result', instruction='实际任务状态：' + row['status'], scope=scope)
             if not reply or not reply.strip():
                 raise ValueError('结果说明为空，原始结果已保留')
             with self.database.transaction() as con:
                 con.execute("UPDATE operation_tasks SET delivery='sending' WHERE id=?", (task_id,))
             sending = True
-            accepted = await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)]))
+            accepted = await asyncio.wait_for(
+                self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)])), 30)
             if not accepted:
                 raise RuntimeError('未找到原会话平台，未确认发送')
             delivery = 'platform_accepted'
             with self.database.transaction() as con:
                 con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (delivery, task_id))
-            turn = event.get_extra('shrink_turn')
-            if turn:
-                self.app.messages.record_bot(turn.source, reply, turn.user_id, turn.reason)
+            self.app.outbound.record(scope, reply, 'agent:' + task_id)
         except asyncio.CancelledError:
             delivery = 'unknown' if sending else 'interrupted'
             with self.database.transaction() as con:

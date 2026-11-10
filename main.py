@@ -120,7 +120,7 @@ class ShrinkPlugin(Star):
         if not event.is_admin():
             return '{"ok":false,"error":"仅管理员可管理AstrBot"}'
         try:
-            result = await self.host.native.call(resource, action, json.loads(arguments), confirmed)
+            result = await self.host.operations.manage_native(resource, action, json.loads(arguments), confirmed)
             self.host.operations.record("native:" + action, resource, result=json.dumps(result, ensure_ascii=False))
             return json.dumps({"ok": True, "data": result}, ensure_ascii=False, default=str)
         except Exception as exc:

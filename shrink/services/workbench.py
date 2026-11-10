@@ -4,6 +4,8 @@ import json
 import re
 import shutil
 import hashlib
+import time
+import uuid
 from pathlib import Path
 
 
@@ -35,7 +37,7 @@ class Workbench:
                 continue
             if file.is_symlink():
                 raise ValueError('插件包含符号链接，不能自动复制')
-            if file.is_file() and file.suffix in {'.py', '.md', '.yaml', '.yml', '.txt', '.html', '.css', '.js', '.ts', '.tsx', '.vue'}:
+            if file.is_file() and file.suffix in {'.py', '.md', '.yaml', '.yml', '.toml', '.txt', '.html', '.css', '.js', '.ts', '.tsx', '.vue'}:
                 yield file, relative
 
     def fingerprints(self, directory):
@@ -58,7 +60,7 @@ class Workbench:
         target = directory / path
         if not target.resolve().is_relative_to(directory.resolve()):
             raise ValueError('文件路径越界')
-        if target.suffix not in {'.py', '.yaml', '.yml', '.md', '.txt', '.html', '.css', '.js', '.ts', '.tsx', '.vue'}:
+        if target.suffix not in {'.py', '.yaml', '.yml', '.toml', '.md', '.txt', '.html', '.css', '.js', '.ts', '.tsx', '.vue'}:
             raise ValueError('不支持该文件类型')
         return target
 
@@ -104,6 +106,48 @@ class Workbench:
         baseline_file = self.root / 'baselines' / (full_name + '.json')
         test_file = self.root / 'tests' / (full_name + '.json')
         async with self.lock:
+            if action == 'archives':
+                return json.dumps([json.loads(p.read_text('utf8'))
+                    for p in sorted((self.root / 'archives' / full_name).glob('*/archive.json'))],
+                    ensure_ascii=False)
+            if action == 'read_archive':
+                archive_id, separator, relative = path.partition('/')
+                if not separator or not re.fullmatch(r'[0-9a-f]{32}', archive_id):
+                    raise ValueError('path使用归档ID/文件相对路径')
+                return self.file(self.root / 'archives' / full_name / archive_id / 'draft',
+                                 relative).read_text('utf8')
+            if action == 'refresh':
+                if not target.is_dir() or target.is_symlink() or draft.is_symlink():
+                    raise ValueError('线上插件或草稿路径无效')
+                generation = self.fingerprints(target)
+                archive_id = uuid.uuid4().hex
+                archive = self.root / 'archives' / full_name / archive_id
+                if not archive.resolve().is_relative_to(self.root.resolve()):
+                    raise ValueError('归档路径越界')
+                prepared = archive / 'prepared'
+                for source, relative in self.source_files(target):
+                    destination = prepared / relative
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                if self.fingerprints(prepared) != generation or self.fingerprints(target) != generation:
+                    raise ValueError('复制期间线上代码发生变化，原草稿保留，请稍后重新检出')
+                archive.mkdir(parents=True, exist_ok=True)
+                metadata = {'id': archive_id, 'plugin': full_name, 'created': time.time(),
+                            'files': [str(r).replace('\\', '/') for _, r in self.source_files(draft)]}
+                (archive / 'archive.json').write_text(json.dumps(metadata), encoding='utf8')
+                if draft.exists():
+                    draft.rename(archive / 'draft')
+                for old, name_in_archive in ((baseline_file, 'baseline.json'), (test_file, 'test.json')):
+                    if old.exists():
+                        old.rename(archive / name_in_archive)
+                draft.parent.mkdir(parents=True, exist_ok=True)
+                prepared.rename(draft)
+                baseline_file.parent.mkdir(parents=True, exist_ok=True)
+                baseline_file.write_text(json.dumps(generation), encoding='utf8')
+                return json.dumps({'ok': True, 'archive_id': archive_id, 'activated': False,
+                    'test_current': False, 'conflict': False,
+                    'message': '已保留旧草稿并检出线上代码；按需从read_archive取回修改，重新test后部署'},
+                    ensure_ascii=False)
             if action == 'status':
                 evidence = json.loads(test_file.read_text('utf-8')) if test_file.exists() else {}
                 return json.dumps({
@@ -117,7 +161,7 @@ class Workbench:
                 }, ensure_ascii=False)
             if action == 'checkout':
                 if not target.is_dir(): raise ValueError('现有插件不存在')
-                if draft.exists(): raise ValueError('已有草稿，请继续修改，避免覆盖未部署内容')
+                if draft.exists(): raise ValueError('已有草稿；继续修改，或用refresh归档旧草稿并重新检出线上代码')
                 for source, relative in self.source_files(target):
                     destination = draft / relative
                     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +194,7 @@ class Workbench:
                 fingerprints = self.fingerprints(draft)
                 result = await self.tester({str(r).replace('\\', '/'): s.read_text('utf-8')
                                            for s, r in self.source_files(draft)
-                                           if s.suffix in {'.py', '.yaml', '.yml', '.txt'}})
+                                           if s.suffix in {'.py', '.yaml', '.yml', '.toml', '.txt'}})
                 test_file.parent.mkdir(parents=True, exist_ok=True)
                 test_file.write_text(json.dumps({'files': fingerprints, 'result': result}), encoding='utf-8')
                 return json.dumps(result, ensure_ascii=False)

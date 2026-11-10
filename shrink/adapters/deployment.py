@@ -24,7 +24,7 @@ class Deployments:
             request = json.loads(path.read_text("utf-8"))
             result = path.with_name("result.json")
             results.append({k: v for k, v in request.items()
-                            if k in {"id", "task_id", "plugin", "session", "created", "action"}} |
+                            if k in {"id", "task_id", "plugin", "session", "sender", "created", "action"}} |
                            (json.loads(result.read_text("utf-8")) if result.exists()
                             else {"status": "queued"}))
         return sorted(results, key=lambda r: r["created"], reverse=True)[:100]
@@ -101,7 +101,7 @@ class Deployments:
                    "action": action,
                    "plugins": str(workbench.plugins), "database": str(self.app.state.root / "shrink.db"),
                    "origin_workbench": str(workbench.root),
-                   "session": event.unified_msg_origin, "created": time.time(),
+                   "session": event.unified_msg_origin, "sender": str(event.get_sender_id()), "created": time.time(),
                    "config": str(workbench.plugins.parent / "cmd_config.json")}
         (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
         pid = self.launch(directory)
@@ -110,6 +110,12 @@ class Deployments:
 
     async def start(self):
         self.worker = asyncio.create_task(self.loop())
+
+    @staticmethod
+    def save_notification(path, state, text):
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(json.dumps({"state": state, "text": text}, ensure_ascii=False), encoding="utf8")
+        temporary.replace(path)
 
     async def loop(self):
         while True:
@@ -125,6 +131,17 @@ class Deployments:
                     continue
                 try:
                     result = json.dumps(row, ensure_ascii=False)
+                    scope = {"session": row["session"], "sender": str(row.get("sender", ""))}
+                    if not scope["sender"] and row.get("task_id"):
+                        scope["sender"] = self.operations.detail(row["task_id"])["sender"]
+                    delivery_path = directory / "notification.json"
+                    delivery = json.loads(delivery_path.read_text("utf8")) if delivery_path.exists() else {}
+                    if delivery.get("state") == "platform_accepted":
+                        self.app.outbound.record(scope, delivery["text"], "deployment:" + directory.name)
+                        (directory / "reported").write_text(str(time.time()))
+                        continue
+                    if delivery.get("state") in {"sending", "unknown"}:
+                        continue
                     if row.get("task_id"):
                         with self.app.database.transaction() as con:
                             con.execute("UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?",
@@ -132,13 +149,14 @@ class Deployments:
                                          result, time.time(), row["task_id"]))
                     from astrbot.api.message_components import Plain
                     from astrbot.core.message.message_event_result import MessageChain
-                    from ..prompts import render, text as prompt_text
-                    text = await asyncio.wait_for(self.app.expression.model(
-                        render("deployment.report", result=result),
-                        prompt_text("deployment.report.system")), 45)
-                    accepted = await self.operations.context.send_message(row["session"], MessageChain([Plain(text)]))
+                    text = await self.app.outbound.compose(result, kind="deployment", scope=scope)
+                    self.save_notification(delivery_path, "sending", text)
+                    accepted = await asyncio.wait_for(
+                        self.operations.context.send_message(row["session"], MessageChain([Plain(text)])), 30)
                     if not accepted:
-                        raise RuntimeError("结果发送未找到匹配平台，将重试")
+                        raise RuntimeError("结果发送未确认；请核对平台记录，不自动重发")
+                    self.save_notification(delivery_path, "platform_accepted", text)
+                    self.app.outbound.record(scope, text, "deployment:" + directory.name)
                     (directory / "reported").write_text(str(time.time()))
                 except Exception as exc:
                     self.app.tasks.error("deployment_report", exc)

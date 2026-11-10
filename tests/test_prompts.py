@@ -38,6 +38,20 @@ async def nothing(*args):
     return None
 
 
+def test_removed_prompts_keep_custom_history_without_loading(tmp_path):
+    app = Application(tmp_path, nothing, nothing, nothing)
+    try:
+        key = "tasks.agent_result"
+        app.prompts.repository.save(key, "以前定制的回报语气", "历史版本")
+        app.prompts.load()
+        assert key not in {entry["key"] for entry in app.prompts.catalog()}
+        assert app.prompts.archived()[0]["history"][0]["text"] == "以前定制的回报语气"
+        assert app.prompts.history(key)[0]["note"] == "历史版本"
+        assert not prompts.overridden(key)
+    finally:
+        app.database.close()
+
+
 @pytest.mark.asyncio
 async def test_save_reset_history_and_persona_sync(tmp_path):
     synced = []

@@ -1,7 +1,7 @@
 import asyncio
 import copy
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -58,10 +58,10 @@ async def test_delivery_cancellation_is_persisted(runtime, monkeypatch, phase, e
     monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
     monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
     entered = asyncio.Event()
-    async def wait(*args):
+    async def wait(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
-    op.app.expression = SimpleNamespace(model=AsyncMock(side_effect=wait) if phase == 'compose' else AsyncMock(return_value='result'))
+    op.app.outbound = SimpleNamespace(compose=AsyncMock(side_effect=wait) if phase == 'compose' else AsyncMock(return_value='result'), record=Mock())
     op.context.send_message = AsyncMock(side_effect=wait)
     task = asyncio.create_task(AgentTasks.deliver_agent_result(op, submitted['task_id'], event))
     await entered.wait()
@@ -83,7 +83,7 @@ async def test_accepted_result_is_not_sent_twice(runtime, monkeypatch):
     await op.running[submitted['task_id']]
     monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
     monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
-    op.app.expression = SimpleNamespace(model=AsyncMock(return_value='result'))
+    op.app.outbound = SimpleNamespace(compose=AsyncMock(return_value='result'), record=Mock())
     op.context.send_message = AsyncMock(return_value=True)
     await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)
     await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)

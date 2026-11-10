@@ -199,7 +199,6 @@ class SkillService:
             if verdict != "unclear":
                 self.repository.score(skill_id, verdict == "good")
         changed = await self.apply(result, refs, episode)
-        self.retire_failing(episode["skills"], episode["id"])
         self.repository.update_episode(
             episode["id"], reviewed=1, verdict=verdict, lesson=lesson
         )
@@ -224,6 +223,13 @@ class SkillService:
         reason = str(result.get("reason") or "").strip()[:120] or "复盘"
         target = refs.get(str(result.get("target") or "").strip())
         if action not in ("create", "update", "retire"):
+            return None
+        if action == "retire":
+            # A model verdict is a suggestion, not proof that the method is unusable.
+            self.state.put("skill_retirement_suggestion", {
+                "at": time.time(), "skill": target["id"] if target else None,
+                "episode": episode["id"], "reason": reason,
+            })
             return None
         if action in ("update", "retire") and not target:
             return None
@@ -260,19 +266,6 @@ class SkillService:
         if action != "retire":
             await self.index(skill_id)
         return action, skill_id
-
-    def retire_failing(self, ids, episode_id):
-        """Know-how that keeps misleading gets switched off without waiting for a model to say so."""
-        for skill in self.repository.many(list(ids)):
-            if (
-                skill["status"] == "active"
-                and skill["losses"] >= 3
-                and skill["losses"] >= 2 * max(1, skill["wins"])
-            ):
-                self.repository.revise(
-                    skill["id"], "最近几次用了反而没办好，自动停用",
-                    episodes=[episode_id], origin="rule", status="retired",
-                )
 
     # ---- dashboard ---------------------------------------------------------------------------------
     def detail(self, skill_id):

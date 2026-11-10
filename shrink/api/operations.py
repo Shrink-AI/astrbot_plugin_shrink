@@ -29,6 +29,25 @@ def router_for(app):
     def event_for(session=""):
         return app.operations.event_for(session)
 
+    @router.get("/admin-sessions")
+    async def admin_sessions():
+        return app.operations.admin_candidates()
+
+    @router.get("/maintenance")
+    async def maintenance():
+        return await app.maintenance.status()
+
+    @router.post("/maintenance/run")
+    async def maintenance_run():
+        if app.maintenance.lock.locked():
+            return {"state": "running"}
+        app.tasks.spawn(app.maintenance.run())
+        return {"state": "started"}
+
+    @router.post("/maintenance/action")
+    async def maintenance_action(body: dict):
+        return await app.maintenance.action(body["kind"], str(body["name"]), body["action"])
+
     @router.get("/tasks")
     async def tasks():
         return app.operations.list()
@@ -83,7 +102,7 @@ def router_for(app):
 
     @router.post("/native")
     async def native(body: NativeCall):
-        return await app.native.call(body.resource, body.action, body.arguments, body.confirmed)
+        return await app.operations.manage_native(body.resource, body.action, body.arguments, body.confirmed)
 
     @router.get("/knowledge")
     async def knowledge():

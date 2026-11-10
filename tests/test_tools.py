@@ -240,15 +240,15 @@ async def test_reflection_rejects_private_or_malformed_know_how(app):
     assert app.runs.list("skill") == []
 
 
-async def test_failing_know_how_is_retired_and_runs_can_be_undone(app):
+async def test_failures_alone_do_not_retire_and_runs_can_be_undone(app):
     skill_id = app.skill_repository.add("查天气", "有人问天气", "1. 搜城市+天气", "人工")
     for _ in range(3):
         _episode(app, text="明天上海天气", skills=[skill_id])
         app.model.results.append({"verdict": "bad", "action": "none"})
     await app.skills.reflect_due(limit=5)
     skill = app.skill_repository.get(skill_id)
-    assert skill["losses"] == 3 and skill["status"] == "retired"
-    assert app.skill_repository.versions(skill_id)[0]["origin"] == "rule"
+    assert skill["losses"] == 3 and skill["status"] == "active"
+    assert len(app.skill_repository.versions(skill_id)) == 1
 
     _episode(app)
     app.model.results.append({

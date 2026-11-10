@@ -21,6 +21,10 @@ def router_for(app):
     async def catalog():
         return service.catalog()
 
+    @router.get("/prompts-archive")
+    async def archive():
+        return service.archived()
+
     @router.put("/prompts/{key}")
     async def save(key: str, body: PromptEdit):
         return await service.save(key, body.text, body.note)

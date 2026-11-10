@@ -1,6 +1,4 @@
 from shrink.services.execution_status import timeout_reply
-from shrink.services.execution_status import compose_timeout
-import asyncio
 
 
 def test_no_invented_failure_cause():
@@ -48,10 +46,3 @@ def test_arbitrary_tool_output_is_not_repeated():
     assert "private" not in text and "还没确认" in text
 
 
-def test_reply_is_written_by_model():
-    async def model(prompt, system):
-        assert '不是待发送文案' in prompt
-        assert '100' in prompt
-        return '模型根据实际状态组织的回复'
-    result = asyncio.run(compose_timeout(model, '石英', '帮我处理', [], 100))
-    assert result == '模型根据实际状态组织的回复'

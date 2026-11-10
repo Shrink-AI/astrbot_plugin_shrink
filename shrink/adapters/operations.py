@@ -11,7 +11,7 @@ from ..services.workbench import Workbench
 from .deployment import Deployments
 from .agent_tasks import AgentTasks
 from .workbench_runtime import AstrBotWorkbenchRuntime
-from .admin_events import admin_event
+from .admin_events import admin_event, admin_candidates
 from ..services.task_context import CURRENT_TASK
 from ..prompts import text as prompt_text
 
@@ -47,6 +47,18 @@ class Operations(AgentTasks):
 
     def event_for(self, session=''):
         return admin_event(self.context, session)
+
+    def admin_candidates(self):
+        return admin_candidates(self.context)
+
+    async def manage_native(self, resource, action, arguments=None, confirmed=False):
+        if resource == "subagents" and action == "update":
+            async with self.agent_config_lock:
+                return await self.app.native.call(resource, action, arguments, confirmed)
+        if resource == "skills" and action in {"create", "write", "update", "delete"}:
+            async with self.app.native_skills.lock:
+                return await self.app.native.call(resource, action, arguments, confirmed)
+        return await self.app.native.call(resource, action, arguments, confirmed)
 
     def list(self):
         return self.database.rows("SELECT * FROM operation_tasks ORDER BY started DESC LIMIT 100")
@@ -181,13 +193,14 @@ class Operations(AgentTasks):
             try:
                 from astrbot.api.message_components import Plain
                 from astrbot.core.message.message_event_result import MessageChain
-                from ..prompts import render, text as prompt_text
-                reply = await asyncio.wait_for(self.app.expression.model(
-                    render("operations.report", request=request, status=status, result=result),
-                    prompt_text("operations.report.system")), 45)
-                accepted = await self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)]))
+                scope = {"session": event.unified_msg_origin, "sender": str(event.get_sender_id())}
+                reply = await self.app.outbound.compose(result, request=request, kind="development",
+                                                       instruction="实际状态：" + status, scope=scope)
+                accepted = await asyncio.wait_for(
+                    self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)])), 30)
                 if not accepted:
                     raise RuntimeError("开发结果发送未找到匹配平台；结果保留在后台任务详情")
+                self.app.outbound.record(scope, reply, "development:" + task_id)
             except Exception as exc:
                 self.app.tasks.error("developer_result_delivery", exc)
 

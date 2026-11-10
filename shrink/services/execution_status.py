@@ -16,8 +16,3 @@ def timeout_reply(steps, deadline):
     return render("timeout.nothing", deadline=deadline)
 
 
-async def compose_timeout(model, system, user_text, steps, deadline):
-    import asyncio
-    facts = timeout_reply(steps, deadline)
-    return await asyncio.wait_for(model(
-        render("execution.timeout", request=user_text, facts=facts), system), 20)

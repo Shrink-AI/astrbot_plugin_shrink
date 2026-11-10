@@ -10,6 +10,7 @@ def reflect_prompt(*, question, steps, answer, outcome, duration, follow_up, ski
     said = text(f"skills.outcome.{outcome}") if outcome in OUTCOMES else outcome
     return join(
         text("skills.reflect.intro"),
+        text("skills.authoring"),
         block("请求", question),
         block("经过", steps or "（没用工具，直接回答）"),
         block("石英的回答", answer or "（没有回答）"),

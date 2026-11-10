@@ -48,3 +48,33 @@ async def test_conflicts_and_escape(tmp_path):
         await work.perform("deploy", target.name, "", "", None)
     with pytest.raises(ValueError):
         await work.perform("write", "example", "../../escape.py", "x=1", None)
+
+
+@pytest.mark.asyncio
+async def test_refresh_archives_old_edits_and_requires_new_tests(tmp_path):
+    work = Workbench(tmp_path / "work", tmp_path / "plugins", AsyncMock(return_value={"ok": True}))
+    target = tmp_path / "plugins" / "astrbot_plugin_existing"
+    target.mkdir(parents=True)
+    (target / "main.py").write_text("VERSION=1")
+    (target / "metadata.yaml").write_text("name: astrbot_plugin_existing")
+    (target / "defaults.toml").write_text('prompt="old"')
+    await work.perform("checkout", target.name, "", "", None)
+    await work.perform("write", target.name, "main.py", "VERSION=1\nMY_EDIT=True", None)
+    await work.perform("test", target.name, "", "", None)
+    assert work.tester.call_args.args[0]["defaults.toml"] == 'prompt="old"'
+    (target / "main.py").write_text("VERSION=2\nNEW_FEATURE=True")
+    (target / "defaults.toml").write_text('prompt="new"')
+    result = json.loads(await work.perform("refresh", target.name, "", "", None))
+    assert result["activated"] is False
+    assert "NEW_FEATURE" in await work.perform("read", target.name, "main.py", "", None)
+    assert 'prompt="new"' == await work.perform("read", target.name, "defaults.toml", "", None)
+    archived = await work.perform("read_archive", target.name, result["archive_id"] + "/main.py", "", None)
+    assert "MY_EDIT" in archived
+    assert len(json.loads(await work.perform("archives", target.name, "", "", None))) == 1
+    status = json.loads(await work.perform("status", target.name, "", "", None))
+    assert not status["conflict"] and status["test"] is None
+    with pytest.raises(ValueError, match="隔离"):
+        await work.perform("deploy", target.name, "", "", None)
+    with pytest.raises(ValueError):
+        await work.perform("read_archive", target.name, result["archive_id"] + "/../../main.py", "", None)
+    assert (target / "main.py").read_text() == "VERSION=2\nNEW_FEATURE=True"

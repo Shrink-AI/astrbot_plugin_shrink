@@ -23,6 +23,7 @@ from .services.consolidation import ConsolidationService
 from .services.context import ContextService
 from .services.digest import DigestService
 from .services.expression import ExpressionService
+from .services.outbound import Outbound
 from .services.glossary import GlossaryService
 from .services.learning import LearningService
 from .services.memes import MemeService
@@ -84,6 +85,8 @@ class Application:
             self.expression = ExpressionService(
                 self.state, self.persona_repository, self.expressions, model, error
             )
+            self.outbound = Outbound(self)
+            self.expression.outbound = self.outbound
             self.materials = Materials(self)
             self.attachments = Attachments(self)
             self.glossary = GlossaryService(self.state, self.memory, search, model, error, self.review)

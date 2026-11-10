@@ -22,7 +22,6 @@ from ..config import BOT_NAME, fixed_persona, persona_prompt
 from ..prompts import render
 from ..prompts import text as prompt_text
 from ..services.expression import choose_form, settle_meme, wants_detail
-from ..services.execution_status import compose_timeout
 from ..services.memes import MAX_IMAGE_BYTES
 from ..services.memory import Query
 from ..services.participation import should_quote
@@ -267,6 +266,9 @@ class ConversationAdapter:
         req.system_prompt += "\n\n" + prompt
         # The plugin owns conversation context; host history may carry leaked or stale replies.
         req.contexts = []
+        event.set_extra("shrink_expression_context", {
+            "chat": window.text, "people": cards, "memories": memories, "examples": examples,
+        })
         event.set_extra("shrink_form", form)
         event.set_extra("shrink_meme_choices", [r["id"] for r in choices])
         event.set_extra("shrink_meme_explicit", explicit)
@@ -338,9 +340,8 @@ class ConversationAdapter:
                 else:
                     await self.send_gave_up(event, turn)
                     return
-                text = await asyncio.wait_for(self.app.expression.model(
-                    render("tasks.background_status", fact=fact),
-                    persona_prompt(self.app.persona_repository.learned_persona())), 20)
+                text = await self.app.outbound.compose(fact, request=turn.text, kind='accepted',
+                    scope={'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())})
                 if text and text.strip():
                     await asyncio.wait_for(event.send(MessageChain([Plain(text)])), 30)
                     self.app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
@@ -351,11 +352,11 @@ class ConversationAdapter:
 
     async def send_gave_up(self, event, turn):
         try:
-            text = await compose_timeout(
-                self.app.expression.model,
-                persona_prompt(self.app.persona_repository.learned_persona()),
-                turn.text, event.get_extra("shrink_tools"), REPLY_DEADLINE,
-            )
+            from ..services.execution_status import timeout_reply
+            text = await self.app.outbound.compose(
+                timeout_reply(event.get_extra("shrink_tools"), REPLY_DEADLINE),
+                request=turn.text, kind="timeout",
+                scope={"session": event.unified_msg_origin, "sender": str(event.get_sender_id())})
             text = strip_reasoning(text or "").strip()
             if not text:
                 return
@@ -387,12 +388,23 @@ class ConversationAdapter:
             # Tool-backed answers carry results, not just conversational flavor.
             form = "tool_result"
             event.set_extra("shrink_form", form)
+        execution = None
+        task_id = event.get_extra("shrink_background_task")
+        if task_id:
+            try:
+                task = app.operations.owned_task(event, task_id)
+                execution = {"status": task["status"], "delegated_to_subagent": True,
+                             "request": task["request"], "reports_back": not bool(task["parent"])}
+            except ValueError:
+                pass
         finished = await app.expression.finish(
             response.completion_text or "",
             user_text=turn.text,
             form=form,
             reason=turn.reason,
             recent=app.messages.recent_bot(turn.source, 3),
+            context=event.get_extra("shrink_expression_context"),
+            execution=execution,
         )
         if finished.meme_id:
             event.set_extra("shrink_selected_meme", finished.meme_id)

@@ -129,8 +129,11 @@ export function PromptsPage() {
   const [entries, setEntries] = useState<PromptEntry[]>([]);
   const [selected, setSelected] = useState('chat.persona');
   const [query, setQuery] = useState('');
+  const [archived, setArchived] = useState<{ key: string; history: PromptVersion[] }[]>([]);
   useEffect(() => {
     api<PromptEntry[]>('/prompts').then(setEntries).catch(e => setError(e.message));
+    api<{ key: string; history: PromptVersion[] }[]>('/prompts-archive')
+      .then(setArchived).catch(e => setError(e.message));
   }, [revision]);
   const groups = useMemo(() => {
     const q = query.trim();
@@ -156,5 +159,15 @@ export function PromptsPage() {
       </Panel>
       {current && <Editor entry={current} />}
     </div>}
+    {archived.length > 0 && <Panel title="已停用提示词的修改记录">
+      <p className="muted">这些提示词已合并或停用，不再参与生成。此前保存的内容仍可查看和复制。</p>
+      {archived.map(entry => <details key={entry.key}>
+        <summary>{entry.key} · {entry.history.length} 个版本</summary>
+        {entry.history.map(row => <div className="list-item" key={row.id}>
+          <small>{date(row.created)} {row.note}</small>
+          <pre>{row.text ?? '当时恢复为默认内容'}</pre>
+        </div>)}
+      </details>)}
+    </Panel>}
   </>;
 }

@@ -15,6 +15,9 @@ class PromptRepository:
         )
         return {r["key"]: r for r in rows if r["text"] is not None}
 
+    def keys(self):
+        return [r["key"] for r in self.database.rows("SELECT DISTINCT key FROM prompt_versions")]
+
     def save(self, key, text, note=""):
         with self.database.transaction() as connection:
             cursor = connection.execute(

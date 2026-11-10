@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import time
+from zoneinfo import ZoneInfo
 
 from ..prompts.knowledge import GROUP, PROFILE, group_prompt, profile_prompt
 from ..prompts import text as prompt_text
@@ -23,6 +24,7 @@ class ConsolidationService:
         self.memory, self.review, self.runs = memory, review, runs
         self.model, self.error = model, error
         self.lock = asyncio.Lock()
+        self.capabilities = None
 
     # ---- cards -------------------------------------------------------------------------------------
     async def profile(self, uid, run_id=None):
@@ -70,13 +72,15 @@ class ConsolidationService:
     def due(self, now=None):
         now = now or time.time()
         last = self.state.get("last_consolidation", 0)
-        hour = datetime.datetime.fromtimestamp(now).hour
-        return now - last > 20 * 3600 and hour >= NIGHT_HOUR and hour < NIGHT_HOUR + 3
+        current = datetime.datetime.fromtimestamp(now, ZoneInfo("Asia/Taipei"))
+        previous = datetime.datetime.fromtimestamp(last, ZoneInfo("Asia/Taipei"))
+        return current.date() != previous.date() and current.hour >= NIGHT_HOUR
 
     async def nightly(self):
         async with self.lock:
             run_id = self.runs.start("consolidate")
             stats = {"expired": 0, "profiles": 0, "groups": 0, "deduplicated": 0}
+            self.item_errors = []
             since = self.state.get("last_consolidation", 0)
             try:
                 for row in self.memory.repository.expired(time.time()):
@@ -90,13 +94,22 @@ class ConsolidationService:
                         stats["groups"] += 1
                 stats["deduplicated"] = self.deduplicate(run_id)
                 self.state.put("last_consolidation", time.time())
-                self.runs.finish(run_id, "success", stats, "夜间整理完成")
+                stats["errors"] = self.item_errors
+                self.runs.finish(run_id, "failed" if self.item_errors else "success", stats,
+                                 "部分记忆整理失败" if self.item_errors else "夜间记忆整理完成")
             except asyncio.CancelledError:
                 self.runs.finish(run_id, "interrupted", stats)
                 raise
             except Exception as exc:
                 self.error("consolidation", exc)
                 self.runs.finish(run_id, "failed", stats, type(exc).__name__)
+            if self.capabilities:
+                try:
+                    stats["capabilities"] = await self.capabilities()
+                except Exception as exc:
+                    self.error("capability_maintenance", exc)
+                    stats["capabilities"] = {"error": str(exc)[:200]}
+            self.state.put("last_consolidation", time.time())
             return stats
 
     async def _safe(self, job):
@@ -104,6 +117,8 @@ class ConsolidationService:
             return await job
         except Exception as exc:
             self.error("consolidation_item", exc)
+            if hasattr(self, "item_errors"):
+                self.item_errors.append(type(exc).__name__)
             return False
 
     def deduplicate(self, run_id, limit=50):

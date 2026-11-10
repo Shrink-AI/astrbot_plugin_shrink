@@ -1,3 +1,4 @@
+import { MaintenancePage } from './MaintenancePage';
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
 import type { Episode, Skill, SkillDetail } from '../api/types';
@@ -180,16 +181,17 @@ function EpisodesTab() {
 
 export function SkillsPage() {
   const { settings, action } = useDashboard();
-  const [tab, setTab] = useState<'skills' | 'episodes'>('skills');
+  const [tab, setTab] = useState<'skills' | 'episodes' | 'maintenance'>('skills');
   return <>
     <PageHead title="经验">
       <label className="check"><input type="checkbox" checked={!!settings.skills_enabled}
         onChange={e => void action(() => api('/settings', 'PUT', { ...settings, skills_enabled: e.target.checked }), e.target.checked ? '已开启经验' : '已暂停经验')} />使用并积累经验</label>
       <div className="segmented">
         <button className={tab === 'skills' ? 'on' : ''} onClick={() => setTab('skills')}>经验</button>
+<button className={tab === 'maintenance' ? 'on' : ''} onClick={() => setTab('maintenance')}>质量维护</button>
         <button className={tab === 'episodes' ? 'on' : ''} onClick={() => setTab('episodes')}>求助记录</button>
       </div>
     </PageHead>
-    {tab === 'skills' ? <SkillsTab /> : <EpisodesTab />}
+    {tab === 'maintenance' ? <MaintenancePage kind="skill" /> : tab === 'skills' ? <SkillsTab /> : <EpisodesTab />}
   </>;
 }

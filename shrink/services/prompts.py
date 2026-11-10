@@ -65,12 +65,16 @@ class PromptService:
 
     def history(self, key):
         if key not in prompts.CATALOG:
-            raise ValueError("没有这个提示词")
+            return self.repository.history(key)
         default = prompts.CATALOG[key]["text"]
         return [
             {**row, "text": default if row["text"] is None else row["text"], "reset": row["text"] is None}
             for row in self.repository.history(key)
         ]
+
+    def archived(self):
+        return [{"key": key, "history": self.repository.history(key)}
+                for key in self.repository.keys() if key not in prompts.CATALOG]
 
     async def _changed(self, key):
         self.load()

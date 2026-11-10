@@ -25,7 +25,7 @@ async def test_core_deployment_snapshots_tested_draft_before_starting_worker(tmp
     await work.perform("test", target.name, "", "", None)
     operations = SimpleNamespace(workbench=work, app=SimpleNamespace(state=SimpleNamespace(root=tmp_path)))
     deployments = Deployments(operations)
-    event = SimpleNamespace(unified_msg_origin="snowluma:FriendMessage:123")
+    event = SimpleNamespace(unified_msg_origin="snowluma:FriendMessage:123", get_sender_id=lambda: "123")
     with patch("shrink.adapters.deployment.subprocess.Popen") as spawn:
         spawn.return_value.pid = 12345
         result = await deployments.submit(target.name, event)
@@ -56,7 +56,7 @@ async def test_worker_restores_prior_source_after_failed_reload_or_interruption(
     operations = SimpleNamespace(workbench=work, app=SimpleNamespace(state=SimpleNamespace(root=tmp_path)))
     deployments = Deployments(operations)
     with patch.object(deployments, "launch", return_value=123):
-        submitted = await deployments.submit(target.name, SimpleNamespace(unified_msg_origin="test"))
+        submitted = await deployments.submit(target.name, SimpleNamespace(unified_msg_origin="test", get_sender_id=lambda: "123"))
     directory = deployments.root / submitted["deployment_id"]
     request = json.loads((directory / "request.json").read_text())
     with sqlite3.connect(request["database"]) as con:
@@ -117,7 +117,7 @@ async def test_manual_core_rollback_is_snapshotted_and_conflict_checked(tmp_path
     (backup / "main.py").write_text("VALUE=1")
     (backup / "metadata.yaml").write_text(f"name: {target.name}")
     deployments = Deployments(SimpleNamespace(workbench=work, app=SimpleNamespace(state=SimpleNamespace(root=tmp_path))))
-    event = SimpleNamespace(unified_msg_origin="test")
+    event = SimpleNamespace(unified_msg_origin="test", get_sender_id=lambda: "123")
     with patch.object(deployments, "launch", return_value=123):
         result = await deployments.submit(target.name, event, action="rollback")
     directory = deployments.root / result["deployment_id"]

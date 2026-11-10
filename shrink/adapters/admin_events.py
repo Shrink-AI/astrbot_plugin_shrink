@@ -1,5 +1,16 @@
 """Translate an authenticated dashboard session into the host's administrator event."""
 
+def admin_candidates(context):
+    admins = [str(x) for x in context.get_config().get("admins_id", [])]
+    items = []
+    for platform in context.platform_manager.get_insts():
+        meta = platform.meta()
+        for account in admins:
+            if account:
+                items.append({"session": f"{meta.id}:FriendMessage:{account}",
+                              "label": f"{meta.id} · 管理员 {account}"})
+    return {"items": items, "reason": "" if items else "没有已连接平台或未配置管理员"}
+
 
 def admin_event(context, session):
     from astrbot.core.cron.events import CronMessageEvent

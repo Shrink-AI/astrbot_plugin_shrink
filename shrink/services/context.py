@@ -62,7 +62,7 @@ class ContextService:
         mark = "（当前）" if current_id and row["id"] == current_id else ""
         return f"[{_clock(row['created'])}] {speaker}{arrow}: {text or '[消息]'}{mark}"
 
-    def window(self, turn):
+    def window(self, turn, *, same_source_only=False):
         settings = self.state.settings
         budget = int(settings.context_budget * 0.6)
         rows = self.messages.window(turn.source, limit=200, before=turn.created + 1)
@@ -95,7 +95,7 @@ class ContextService:
         for digest in old:
             if digest["end"] < start - 3600:
                 sections.append(f"（之前聊过，{_date(digest['start'])}）{digest['summary']}")
-        elsewhere = self.messages.elsewhere(
+        elsewhere = [] if same_source_only else self.messages.elsewhere(
             turn.user_id, turn.source, time.time() - ELSEWHERE_SECONDS, 6
         )
         if elsewhere:

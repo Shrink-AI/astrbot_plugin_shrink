@@ -143,9 +143,9 @@ async def test_finishing_and_detail(store):
 
 
 @pytest.mark.asyncio
-async def test_tool_result_preserves_task_summary(store):
+async def test_tool_result_survives_failed_expression(store):
     async def must_not_rewrite(*args):
-        raise AssertionError("Task results must not go through chat shortening")
+        raise RuntimeError("Expression provider unavailable")
 
     store.expression.model = must_not_rewrite
     text = "看板上未归档且没做完的还有5项：\n" + "\n".join(
@@ -166,15 +166,16 @@ async def test_tool_result_preserves_task_summary(store):
         "记上了，SYD-014。\n先挂三秋名下了。", user_text="帮我记一条",
         form="tool_result", reason="direct", recent=[],
     )
-    assert result.text == "记上了，SYD-014\n先挂三秋名下了"
+    assert result.text == "记上了，SYD-014。\n先挂三秋名下了。"
 
 
 def test_turn_prompt_shows_task_reply_style():
     from shrink.prompts.chat import fixed_persona, turn_prompt
 
     prompt = turn_prompt(speaker="测试成员", form="detail")
-    assert "用了工具办事之后的回法" in prompt
-    assert "spaceId" in fixed_persona() and "不受短回复字数限制" not in fixed_persona()
+    assert "办事回复示例" in prompt
+    assert "内部ID、路径和日志默认留在后台" in fixed_persona()
+    assert "清单不漏项" in fixed_persona()
 
 
 def test_participation_limit(store):

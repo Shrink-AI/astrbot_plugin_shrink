@@ -6,6 +6,7 @@ import re
 import zipfile
 
 import httpx
+from ..prompts import text as prompt_text
 
 
 ROUTES = {
@@ -150,7 +151,12 @@ class NativeManagement:
             if result.get("status") != "ok":
                 raise ValueError(str(redact(result))[:2000])
             data = result.get("data")
+            if self.app and resource == "skills" and action == "create":
+                from ..services.task_context import CURRENT_TASK
+                if CURRENT_TASK.get():
+                    self.app.operations.record("skill_created", name, result="created through native API")
             if self.app and resource == "skills" and action == "list":
+                data["authoring_guidance"] = prompt_text("skills.authoring")
                 labels = {r["name"]: r["title"] for r in self.app.database.rows(
                     "SELECT n.name,s.title FROM native_skill_links n JOIN skills s ON s.id=n.id")}
                 for skill in data.get("skills", []):

@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { Empty, PageHead } from '../shared/components';
 import { useDashboard } from '../shared/dashboard';
 import { PluginCapabilities } from './PluginCapabilities';
+import { MaintenancePage } from './MaintenancePage';
 
 type Item = Record<string, any>;
 const resources: Record<string, string> = {
@@ -109,6 +110,7 @@ export function CapabilitiesPage() {
   return <>
     <PageHead title="插件与能力" />
     <PluginCapabilities />
+    {resource === 'subagents' && <MaintenancePage kind="subagent" />}
     <div className="toolbar">
       <select value={resource} onChange={e => {
         setResource(e.target.value); setEditor(null); setOutput(null); setDocuments([]); setSelectedKb('');

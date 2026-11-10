@@ -103,7 +103,7 @@ class ExpressionService:
     def prompt(self, **parts):
         return turn_prompt(**parts)
 
-    async def finish(self, raw, *, user_text, form, reason, recent):
+    async def finish(self, raw, *, user_text, form, reason, recent, context=None, execution=None):
         """Clean a model reply. Never returns reasoning, narration or markers."""
         text = strip_reasoning(raw or "")
         text, skip, meme_id = take_markers(text)
@@ -111,8 +111,10 @@ class ExpressionService:
             return Finished("", skip=True)
         text = drop_meta_sentences(text) if looks_like_meta(text) else text
         if form == "tool_result":
-            # Keep every fact, but drop the period at each line end like a person typing.
-            text = "\n".join(re.sub(r"。+$", "", line.rstrip()) for line in text.strip().splitlines())
+            if getattr(self, "outbound", None):
+                facts = {"answer": text, "execution": execution} if execution else text
+                text = await self.outbound.compose(facts, request=user_text, kind="tool_result",
+                                                   context=context, recent=recent)
             return Finished(text.strip(), meme_id=meme_id)
         if form == "detail":
             return Finished(text.strip(), meme_id=meme_id)
