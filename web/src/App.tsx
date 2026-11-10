@@ -15,6 +15,7 @@ import { SkillsPage } from './pages/SkillsPage';
 import { TeachPage } from './pages/TeachPage';
 import { OperationsPage, CapabilitiesPage } from './pages/OperationsPage';
 import { ChatsPage } from './pages/ChatsPage';
+import { DevicesPage } from './pages/DevicesPage';
 import { DashboardContext } from './shared/dashboard';
 
 const sections = [
@@ -36,6 +37,7 @@ const sections = [
   { name: '后台', pages: [
     { key: 'runs', name: '整理记录', icon: History, view: RunsPage },
     { key: 'operations', name: '开发任务', icon: Wrench, view: OperationsPage },
+    { key: 'devices', name: '电脑与 Agent', icon: Wrench, view: DevicesPage },
     { key: 'capabilities', name: '插件与能力', icon: Puzzle, view: CapabilitiesPage },
     { key: 'settings', name: '设置', icon: Settings2, view: SettingsPage },
   ] },
