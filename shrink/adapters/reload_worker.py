@@ -31,8 +31,15 @@ async def run(directory):
                 if not row or row[0] not in {"queued", "running", "waiting", "testing", "deploying"}:
                     break
                 await asyncio.sleep(1)
-            # Allow the submitting tool result and foreground response to leave.
-            await asyncio.sleep(8)
+            # The foreground pipeline, including its final response hooks, must
+            # finish before closing the core database it still owns.
+            while not (directory / "caller_finished").exists():
+                marker = directory.parent / "generation"
+                if marker.exists() and marker.read_text() != request["generation"]:
+                    save({"status": "unknown", "finished": time.time(),
+                          "error": "等待回复期间实例已更换，未重复执行重载"})
+                    return
+                await asyncio.sleep(1)
             config = json.loads(Path(request["config"]).read_text("utf-8-sig"))["dashboard"]
             import jwt
             token = jwt.encode({"username": config["username"], "exp": time.time() + 120},

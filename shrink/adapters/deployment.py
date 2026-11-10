@@ -130,6 +130,12 @@ class Deployments:
                    "config": str(self.operations.workbench.plugins.parent / "cmd_config.json"),
                    "generation": marker.read_text() if marker.exists() else ""}
         (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        pipeline = event.get_extra("shrink_pipeline_task") if hasattr(event, "get_extra") else None
+        ready = directory / "caller_finished"
+        if pipeline is not None and not pipeline.done():
+            pipeline.add_done_callback(lambda _: ready.write_text("done", encoding="utf-8"))
+        else:
+            ready.write_text("done", encoding="utf-8")
         shutil.copy2(Path(__file__).with_name("reload_worker.py"), directory / "worker.py")
         self.launch(directory)
         return {"pending": True, "completed": False, "reload_id": job_id,

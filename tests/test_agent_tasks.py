@@ -392,3 +392,19 @@ async def test_reload_validates_admin_busy_and_persists_request(runtime):
     with pytest.raises(ValueError):
         await deployments.reload_core(event, "hot")
     deployments.launch.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reload_waits_for_foreground_completion(runtime):
+    op, event, _ = runtime
+    gate = asyncio.Event()
+    pipeline = asyncio.create_task(gate.wait())
+    event.set_extra("shrink_pipeline_task", pipeline)
+    op.deployments.launch = Mock(return_value=123)
+    result = await op.deployments.reload_core(event, "hot")
+    ready = op.deployments.root / result["reload_id"] / "caller_finished"
+    assert not ready.exists()
+    gate.set()
+    await pipeline
+    await asyncio.sleep(0)
+    assert ready.exists()

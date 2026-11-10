@@ -327,6 +327,7 @@ class ConversationAdapter:
                 if not entries:
                     self.active_turns.pop(key, None)
             task.add_done_callback(finished)
+        event.set_extra("shrink_pipeline_task", task)
         event.set_extra("shrink_turn_tracked", True)
 
     @staticmethod
