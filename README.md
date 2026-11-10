@@ -228,6 +228,17 @@ Windows 上把 `.venv/bin/` 换成 `.venv\Scripts\`。
 - `integration_probe.py`、`sticker_probe.py`、`runtime_probe.py`、`task_reply_probe.py`：要在 AstrBot 容器里运行，用宿主钩子和模拟消息检查流程与表情发送，不会往 QQ 发消息。`runtime_probe.py` 通过环境变量 `SHRINK_PROBE_MODEL`、`SHRINK_PROBE_EMBEDDING` 指定 `cmd_config.json` 里的提供商 id；模型调用会访问已配置的提供商。
 - `bundle.py`：在 Git 工作副本中运行，生成 `runtime/shrink-release.zip`。只打包 Git 可见且未被忽略的文件；包含未提交的新源码，不包含 Git 历史。发布前提交所需改动，并确认未纳入凭据、聊天记录或运行数据。不要直接压缩整个工作目录。
 
+## 独立接入插件
+
+| 仓库 | 职责 |
+| --- | --- |
+| [shrink-desktop](https://github.com/cneicy/shrink-desktop) | Windows C# 托盘被控端，直接连接本机 Agent |
+| [astrbot_plugin_shrink_desktop](https://github.com/cneicy/astrbot_plugin_shrink_desktop) | 设备配对、电脑任务、会话监工和结果回传 |
+| [astrbot_plugin_shirnk_tools](https://github.com/cneicy/astrbot_plugin_shirnk_tools) | CraftTable / Gitea 项目工具 |
+| [astrbot_plugin_shirnk_ext_reminder](https://github.com/cneicy/astrbot_plugin_shirnk_ext_reminder) | 原生未来任务、提醒回执和补发 |
+
+插件通过公开能力协议协作，分别安装和维护，不随核心仓库打包运行配置。桌面控制使用主动 WSS 连接，不依赖 bothouse。
+
 ## 致谢
 
 石英是独立实现的，只用了 AstrBot 公开的插件、人格、提供商、知识库、Skill、子代理和定时任务接口。功能分工参考了 chat_plus、LivingMemory、Self Learning 和 meme_manager，没有复制它们的代码。

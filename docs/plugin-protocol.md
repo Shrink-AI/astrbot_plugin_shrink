@@ -29,7 +29,9 @@ AstrBot 激活插件实例可实现两个方法：同步 `plugin_capabilities()`
 | message.compose | 石英核心 | 按当前人格表达工具事实，不发送、不写记忆 |
 | projects.crafttable | 项目工具插件 | 发现和调用 CLI 工具，按实际成员权限选择空间 |
 | projects.gitea | 项目工具插件 | 按账号权限及现有项目约束调用 CLI |
-| computer.tasks | bothouse | 提交与查询电脑任务，原会话回传 |
+| computer.control | 桌面接入插件 | 配对设备、Agent 会话控制、确认与监工 |
+| computer.tasks | 桌面接入插件 | 提交与查询电脑任务，原会话回传 |
+| computer.project | 桌面接入插件 | 在授权设备上执行受限制的项目 CLI |
 | reminders.manage | 提醒插件 | 创建、查看、取消提醒及回执 |
 
 旧原生工具名继续可用；`shrink_deliver_reminder` 为兼容已保存 Cron 任务而保留，但注册方是提醒插件。石英以 `shrink_plugin_capability` 发现和调用协议能力，后台“插件公开能力”使用同一目录和参数。正常工具结果继续经过石英筛选整理后才可入记忆。
