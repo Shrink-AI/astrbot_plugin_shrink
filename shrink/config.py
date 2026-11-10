@@ -13,6 +13,7 @@ class Settings(BaseModel):
     persona_id: str = "default"
     spontaneous_probability: float = Field(0.06, ge=0, le=1)
     spontaneous_limit: int = Field(2, ge=0, le=10)
+    group_blacklist: list[str] = []
     learning_enabled: bool = True
     learning_hours: float = Field(6, ge=0.25, le=168)
     learning_min_messages: int = Field(60, ge=10, le=1000)

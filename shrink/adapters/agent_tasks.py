@@ -8,6 +8,12 @@ import uuid
 import httpx
 
 from ..prompts import text as prompt_text
+from ..config import persona_prompt
+from ..persistence.clarifications import Clarifications
+
+
+class AwaitingUserInput(Exception):
+    pass
 
 
 class AgentTasks:
@@ -26,6 +32,8 @@ class AgentTasks:
         self.database.connection.commit()
         self.agent_config_lock = asyncio.Lock()
         self.agent_slots = asyncio.Semaphore(3)
+        self.clarifications = Clarifications(self.database)
+        self.question_signals = {}
 
     def owned_task(self, event, task_id):
         row = self.detail(task_id)
@@ -40,11 +48,15 @@ class AgentTasks:
             raise ValueError('arguments必须是JSON对象')
         if action == 'guide':
             return {
-                'create': {'name': '任务用途英文名', 'instructions': '职责、范围和验收',
+                'create': {'name': '任务用途英文名', 'persona': '角色人格、交流方式与职责边界',
+                           'instructions': '职责、范围和验收',
                            'tools': ['从tools返回列表选取'], 'provider_id': 'shrink/gpt-6.1-sol'},
                 'submit': {'agent': '已创建的名称', 'request': '完整任务及来源/项目',
                            'depends_on': ['可选先前任务ID']},
                 'status/cancel/resume': {'task_id': '当前会话任务ID'},
+                'ask_user': {'question': '问题与建议答案', 'context': '已查明事实和受影响步骤',
+                             'options': ['可选方案']},
+                'resume_after_question': {'task_id': '待答复任务ID', 'answer': '原用户的答复'},
                 'list': {}, 'tools': {},
                 'workflow': prompt_text('tasks.orchestrate.workflow'),
                 'limits': prompt_text('tasks.orchestrate.limits'),
@@ -53,6 +65,22 @@ class AgentTasks:
             return await self.agent_tools()
         if action == 'create':
             return await self.create_agent(args)
+        if action == 'ask_user':
+            from ..services.task_context import CURRENT_TASK
+            task_id = CURRENT_TASK.get()
+            if not task_id or task_id not in self.question_signals:
+                raise ValueError('ask_user仅供执行中的子代理使用；主会话直接询问用户')
+            self.owned_task(event, task_id)
+            question = args.get('question', '')
+            context = args.get('context', '')
+            options = args.get('options', [])
+            if not isinstance(question, str) or not question.strip() or len(question) > 6000:
+                raise ValueError('question需要明确问题和建议答案，最多6000字')
+            if not isinstance(context, str) or len(context) > 8000 or not isinstance(options, list):
+                raise ValueError('context或options格式无效')
+            self.clarifications.ask(task_id, question, context, options)
+            self.question_signals[task_id].set()
+            return {'status': 'awaiting_input', 'question_saved': True}
         if action == 'submit':
             return await self.submit_agent(event, args.get('agent', ''), args.get('request', ''),
                                            args.get('depends_on', []))
@@ -64,7 +92,24 @@ class AgentTasks:
             if action == 'status':
                 return row
             if action == 'cancel':
+                if row['status'] == 'awaiting_input':
+                    with self.database.transaction() as con:
+                        con.execute("UPDATE operation_tasks SET status='cancelled',delivery='cancelled' WHERE id=?",
+                                    (row['id'],))
+                    return {'task_id': row['id'], 'status': 'cancelled'}
                 return await self.cancel(row['id'])
+            if row['status'] == 'awaiting_input':
+                answer = args.get('answer', '')
+                if not isinstance(answer, str) or not answer.strip() or len(answer) > 12000:
+                    raise ValueError('请取得原用户答复后用answer续做，不能空答复重跑')
+                question = self.clarifications.get(row['id'])
+                result = await self.submit_agent(event, row['agent'],
+                    row['request'] + '\n已完成现场（不重复执行）：\n' + self.checkpoint(row['id']) +
+                    '\n待决问题：' + question['question'] + '\n原用户答复：' + answer)
+                self.clarifications.answer(row['id'], answer)
+                with self.database.transaction() as con:
+                    con.execute("UPDATE operation_tasks SET status='continued' WHERE id=?", (row['id'],))
+                return result
             if row['status'] in {'queued', 'running', 'waiting'}:
                 return {'task_id': row['id'], 'status': row['status'], 'already_running': True}
             if row['kind'] != 'agent':
@@ -102,8 +147,18 @@ class AgentTasks:
             raise ValueError('tools必须是工具名列表')
         available = await self.agent_tools()
         allowed = {t['name'] for t in available if t.get('active', True)}
+        if tools == ['*']:
+            tools = sorted(allowed)
         if set(tools) - allowed:
             raise ValueError('工具不存在或未启用：' + ','.join(sorted(set(tools) - allowed)))
+        if tools and 'shrink_lookup' in allowed and 'shrink_lookup' not in tools:
+            tools = [*tools, 'shrink_lookup']
+        role_persona = args.get('persona', '你是石英的任务同构体，沿用石英人格，专注当前分工；'
+                                '对内明确说明证据、未知和阻碍，不向用户重复发送进度。')
+        if not isinstance(role_persona, str) or not role_persona.strip() or len(role_persona) > 3000:
+            raise ValueError('persona需要明确角色人格，最多3000字')
+        repository = getattr(self.app, 'persona_repository', None)
+        personality = persona_prompt(repository.learned_persona() if repository else '')
         provider = args.get('provider_id', 'shrink/gpt-6.1-sol')
         if not any(p.get('id') == provider for p in self.context.get_config().get('provider', [])):
             raise ValueError('模型必须是已配置provider_id')
@@ -114,7 +169,8 @@ class AgentTasks:
             definition = {'name': name, 'enabled': True, 'provider_id': provider, 'persona_id': None,
                           'tools': list(dict.fromkeys(tools)),
                           'public_description': instructions[:160],
-                          'system_prompt': instructions + '\n' + prompt_text('tasks.agent_policy')}
+                          'system_prompt': personality + '\n角色人格：' + role_persona + '\n任务职责：'
+                                           + instructions + '\n' + prompt_text('tasks.agent_policy')}
             if existing:
                 if all(existing.get(k) == v for k, v in definition.items()):
                     return {'agent': name, 'existing': True, 'provider': provider}
@@ -135,6 +191,8 @@ class AgentTasks:
         if not isinstance(dependencies, list) or not all(isinstance(x, str) for x in dependencies):
             raise ValueError('depends_on必须是已有任务ID列表')
         parent = parent or CURRENT_TASK.get()
+        if parent and self.question_signals.get(parent) and self.question_signals[parent].is_set():
+            raise ValueError('该任务正在等待用户决定，不能继续派工')
         ancestors, cursor = set(), parent
         while cursor:
             if cursor in ancestors:
@@ -195,11 +253,30 @@ class AgentTasks:
                                       tool_call_timeout=180)
         tools = FunctionToolExecutor._build_handoff_toolset(wrapper, handoff.agent.tools)
         # Same native runner as handoff, with explicit hooks so partial writes survive timeouts.
-        response = await self.context.tool_loop_agent(
-            event=event, chat_provider_id=handoff.provider_id, prompt=request,
-            system_prompt=handoff.agent.instructions + '\n' + prompt_text('skills.authoring'), tools=tools,
-            contexts=handoff.agent.begin_dialogs or [], max_steps=128,
-            tool_call_timeout=180, agent_hooks=AuditHooks(), stream=False)
+        async def execute():
+            return await self.context.tool_loop_agent(
+                event=event, chat_provider_id=handoff.provider_id, prompt=request,
+                system_prompt=handoff.agent.instructions + '\n' + prompt_text('tasks.execution_scope')
+                    + '\n' + prompt_text('tasks.development_standard')
+                    + '\n' + prompt_text('tasks.agent_resources')
+                    + '\n' + prompt_text('skills.authoring'), tools=tools,
+                contexts=handoff.agent.begin_dialogs or [], max_steps=128,
+                tool_call_timeout=180, agent_hooks=AuditHooks(), stream=False)
+        from ..services.task_context import CURRENT_TASK
+        task_id = CURRENT_TASK.get()
+        signal = self.question_signals.setdefault(task_id, asyncio.Event())
+        execution = asyncio.create_task(execute())
+        waiting = asyncio.create_task(signal.wait())
+        try:
+            await asyncio.wait([execution, waiting], return_when=asyncio.FIRST_COMPLETED)
+            if signal.is_set():
+                raise AwaitingUserInput()
+            response = execution.result()
+        finally:
+            for pending in (execution, waiting):
+                if not pending.done():
+                    pending.cancel()
+            await asyncio.gather(execution, waiting, return_exceptions=True)
         if getattr(response, 'role', '') == 'err':
             raise RuntimeError(response.completion_text or '子代理模型返回错误')
         return response.completion_text or ''
@@ -252,14 +329,29 @@ class AgentTasks:
                             await asyncio.shield(running)
                     evidence = [{k: self.detail(c['id'])[k] for k in ('id', 'request', 'status', 'result')}
                                 for c in children]
-                    summarizer = copy.deepcopy(handoff)
-                    summarizer.agent.tools = []
-                    async with self.agent_slots:
-                        result = await self.invoke_agent(summarizer, event,
-                            '所有本轮子任务已返回。根据以下真实结果汇总原请求的完成情况；失败或未确认的部分必须说明。'
-                            '本阶段只汇总，不再派工。\n原请求：' + row['request'] +
-                            '\n子任务证据：' + json.dumps(evidence, ensure_ascii=False))
-                    status = 'completed' if result.strip() and all(x['status'] == 'completed' for x in evidence) else 'needs_attention'
+                    questions = [self.clarifications.get(c['id']) for c in evidence if c['status'] == 'awaiting_input']
+                    questions = [q for q in questions if q]
+                    if questions:
+                        batch = '\n\n'.join(dict.fromkeys(q['question'] for q in questions))
+                        self.clarifications.ask(task_id, batch, '各分工已查明事实后需要用户决定', [])
+                        result = json.dumps({'status': 'awaiting_input', 'question': batch,
+                                             'children': evidence}, ensure_ascii=False)
+                        status = 'awaiting_input'
+                    else:
+                        summarizer = copy.deepcopy(handoff)
+                        summarizer.agent.tools = []
+                        async with self.agent_slots:
+                            result = await self.invoke_agent(summarizer, event,
+                                '所有本轮子任务已返回。根据以下真实结果汇总原请求的完成情况；失败或未确认的部分必须说明。'
+                                '本阶段只汇总，不再派工。\n原请求：' + row['request'] +
+                                '\n子任务证据：' + json.dumps(evidence, ensure_ascii=False))
+                        status = 'completed' if result.strip() and all(x['status'] == 'completed' for x in evidence) else 'needs_attention'
+        except AwaitingUserInput:
+            status = 'awaiting_input'
+            question = self.clarifications.get(task_id)
+            result = json.dumps({'status': status, 'question': question['question'],
+                                 'context': question['context'], 'options': json.loads(question['options'])},
+                                ensure_ascii=False)
         except asyncio.CancelledError:
             status, result = 'cancelled', '任务已取消，已完成步骤保留在执行记录。'
         except TimeoutError:
@@ -281,6 +373,7 @@ class AgentTasks:
                 if status != 'cancelled' and not row['parent']:
                     con.execute("UPDATE operation_tasks SET delivery='pending' WHERE id=?", (task_id,))
             CURRENT_TASK.reset(token)
+            self.question_signals.pop(task_id, None)
         if status != 'cancelled' and not row['parent']:
             await self.deliver_agent_result(task_id, event)
 
@@ -301,7 +394,10 @@ class AgentTasks:
             from astrbot.core.message.message_event_result import MessageChain
             scope = {'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())}
             reply = await self.app.outbound.compose(row['result'], request=row['request'],
-                kind='agent_result', instruction='实际任务状态：' + row['status'], scope=scope)
+                kind='question' if row['status'] == 'awaiting_input' else 'agent_result',
+                instruction='实际任务状态：' + row['status'] + (
+                    '。只向用户询问保存的问题和建议答案，等待答复；不宣称任务完成。'
+                    if row['status'] == 'awaiting_input' else ''), scope=scope)
             if not reply or not reply.strip():
                 raise ValueError('结果说明为空，原始结果已保留')
             with self.database.transaction() as con:
@@ -330,7 +426,7 @@ class AgentTasks:
         if not event.is_admin():
             raise ValueError('仅管理员可补发任务结果')
         row = self.owned_task(event, task_id)
-        if row['kind'] != 'agent' or row['parent'] or row['status'] not in {'completed', 'needs_attention', 'timed_out'}:
+        if row['kind'] != 'agent' or row['parent'] or row['status'] not in {'completed', 'needs_attention', 'timed_out', 'awaiting_input'}:
             raise ValueError('只能补发已结束的顶层代理任务结果')
         if row['delivery'] in {'sending', 'unknown'}:
             raise ValueError('发送结果不明，请先核对平台记录，不能直接重发')

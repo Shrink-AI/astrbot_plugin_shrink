@@ -62,7 +62,7 @@ class ContextService:
         mark = "（当前）" if current_id and row["id"] == current_id else ""
         return f"[{_clock(row['created'])}] {speaker}{arrow}: {text or '[消息]'}{mark}"
 
-    def window(self, turn, *, same_source_only=False):
+    def window(self, turn, *, same_source_only=False, recent_only=False):
         settings = self.state.settings
         budget = int(settings.context_budget * 0.6)
         rows = self.messages.window(turn.source, limit=200, before=turn.created + 1)
@@ -86,16 +86,16 @@ class ContextService:
         )
         start = picked[0][0]["created"] if picked else turn.created
         sections = []
-        earlier = self.digests.before(turn.source, start, 2)
+        earlier = [] if recent_only else self.digests.before(turn.source, start, 2)
         for digest in reversed(earlier):
             sections.append(f"（更早 {_date(digest['start'])}～{_clock(digest['end'])}，摘要）{digest['summary']}")
         query = grams(turn.text + " " + " ".join(self.people.display(u) for u in participants[-3:]))
-        old = self.digests.search(query, exclude=[d["id"] for d in earlier], limit=2,
+        old = [] if recent_only else self.digests.search(query, exclude=[d["id"] for d in earlier], limit=2,
                                   source=turn.source)
         for digest in old:
             if digest["end"] < start - 3600:
                 sections.append(f"（之前聊过，{_date(digest['start'])}）{digest['summary']}")
-        elsewhere = [] if same_source_only else self.messages.elsewhere(
+        elsewhere = [] if same_source_only or recent_only else self.messages.elsewhere(
             turn.user_id, turn.source, time.time() - ELSEWHERE_SECONDS, 6
         )
         if elsewhere:

@@ -21,6 +21,16 @@ class Participation:
         self.other_conversations = {}
         self.bot_replies = defaultdict(deque)
 
+    def _group_blacklisted(self, turn):
+        configured = {str(group).strip() for group in self.state.settings.group_blacklist if str(group).strip()}
+        if not configured or turn.private:
+            return False
+        source = str(turn.source or "")
+        group_id = str(turn.source_name or "")
+        if ":group:" in source:
+            group_id = source.rsplit(":group:", 1)[1]
+        return source in configured or group_id in configured
+
     def permit_spontaneous(self, source, random_value, boost=1.0):
         settings = self.state.settings
         now = time.time()
@@ -61,6 +71,8 @@ class Participation:
         if turn.addressee and turn.addressee != SELF:
             self.other_conversations[key] = now + FOLLOWUP_SECONDS
             return "addressed_other"
+        if self._group_blacklisted(turn):
+            return "group_blacklisted"
         # The latest addressing wins: after turning to someone else, follow-ups belong to them.
         if key in self.other_conversations:
             return "other_conversation_followup"

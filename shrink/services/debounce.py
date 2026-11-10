@@ -36,6 +36,8 @@ class Debouncer:
 
     async def collect(self, key, text, components, reason, *, quiet=1.5, maximum=6.0):
         now = time.monotonic()
+        if reason == "group_blacklisted":
+            return Burst(now, now, texts=[text], components=list(components), reason=reason)
         burst = self.pending.get(key)
         if burst is None:
             burst = self.pending[key] = Burst(now, now, reason=reason)

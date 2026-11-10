@@ -254,3 +254,107 @@ async def test_cannot_wait_on_ancestor_and_cancel_cascades(runtime):
     await entered.wait()
     await op.cancel(first['task_id'])
     assert all(r['status'] == 'cancelled' for r in op.list())
+
+
+@pytest.mark.asyncio
+async def test_cancel_owned_leaves_other_session_running(runtime):
+    op, event, _ = runtime
+    await create(op)
+    entered = asyncio.Event()
+    async def invoke(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    op.invoke_agent = invoke
+    ours = await op.submit_agent(event, 'researcher', 'ours')
+    other = Event()
+    other.unified_msg_origin = 'qq:GroupMessage:other'
+    theirs = await op.submit_agent(other, 'researcher', 'theirs')
+    await entered.wait()
+    assert await op.cancel_owned(event) == [ours['task_id']]
+    assert op.detail(ours['task_id'])['delivery'] == 'cancelled'
+    assert not op.running[theirs['task_id']].done()
+    await op.cancel(theirs['task_id'])
+
+
+@pytest.mark.asyncio
+async def test_agent_persona_and_native_capabilities_are_saved(runtime):
+    op, _, config = runtime
+    op.agent_tools = AsyncMock(return_value=[
+        {'name': name, 'active': True} for name in
+        ['shrink_lookup', 'shrink_native_manage', 'plugin_action', 'mcp_project_read',
+         'astrbot_execute_python', 'knowledge_search']])
+    result = await op.create_agent({'name': 'researcher', 'persona': '细致克制的资料研究同构体',
+                                   'instructions': '核对项目资料', 'tools': ['*']})
+    definition = config['agents'][0]
+    assert '细致克制' in definition['system_prompt'] and '石英' in definition['system_prompt']
+    assert set(result['tools']) == {t['name'] for t in await op.agent_tools()}
+    await op.create_agent({'name': 'narrow', 'instructions': '仅核对资料', 'tools': ['plugin_action']})
+    assert config['agents'][1]['tools'] == ['plugin_action', 'shrink_lookup']
+
+
+@pytest.mark.asyncio
+async def test_native_runner_pauses_for_question_and_requires_scoped_answer(runtime, monkeypatch):
+    import sys
+    op, event, _ = runtime
+    await create(op)
+    handoff = op.context.subagent_orchestrator.handoffs[0]
+    handoff.agent.begin_dialogs = []
+    monkeypatch.setitem(sys.modules, 'astrbot.core.astr_agent_context', SimpleNamespace(
+        AgentContextWrapper=lambda **kw: SimpleNamespace(**kw),
+        AstrAgentContext=lambda **kw: SimpleNamespace(**kw)))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.astr_agent_tool_exec', SimpleNamespace(
+        FunctionToolExecutor=SimpleNamespace(_build_handoff_toolset=lambda *a: ['native-tools'])))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.agent.hooks', SimpleNamespace(BaseAgentRunHooks=object))
+    cancelled = asyncio.Event()
+    async def native_runner(**kwargs):
+        assert '原生工具' in kwargs['system_prompt']
+        if '原用户答复' in kwargs['prompt']:
+            return SimpleNamespace(role='assistant', completion_text='按答复完成')
+        await op.orchestrate(event, 'ask_user', {'question': '仅支持原会话可以吗？建议：是',
+                                               'context': '发送范围影响实现', 'options': ['原会话', '跨会话']})
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    op.context.tool_loop_agent = native_runner
+    submitted = await op.submit_agent(event, 'researcher', '实现提醒')
+    await op.running[submitted['task_id']]
+    row = op.detail(submitted['task_id'])
+    assert row['status'] == 'awaiting_input' and cancelled.is_set()
+    assert '仅支持原会话' in row['result']
+    with pytest.raises(ValueError, match='答复'):
+        await op.orchestrate(event, 'resume', {'task_id': row['id']})
+    other = Event()
+    other.unified_msg_origin = 'qq:GroupMessage:other'
+    with pytest.raises(ValueError, match='当前会话'):
+        await op.orchestrate(other, 'resume', {'task_id': row['id'], 'answer': '是'})
+    resumed = await op.orchestrate(event, 'resume', {'task_id': row['id'], 'answer': '是，原会话'})
+    await op.running[resumed['task_id']]
+    assert op.detail(resumed['task_id'])['status'] == 'completed'
+    assert op.clarifications.get(row['id'])['answer'] == '是，原会话'
+    assert op.detail(row['id'])['status'] == 'continued'
+
+
+@pytest.mark.asyncio
+async def test_child_questions_are_batched_by_parent(runtime):
+    from shrink.adapters.agent_tasks import AwaitingUserInput
+    op, event, _ = runtime
+    await create(op, 'coordinator')
+    await create(op, 'researcher')
+    async def invoke(handoff, ev, request):
+        if handoff.agent.name == 'coordinator':
+            await op.submit_agent(ev, 'researcher', '界面范围')
+            await op.submit_agent(ev, 'researcher', '保存方式')
+            return '分工已提交'
+        task_id = CURRENT_TASK.get()
+        question = 'Q1 界面只做桌面吗？建议：是' if request.startswith('界面') else 'Q2 数据保存在本机吗？建议：是'
+        op.clarifications.ask(task_id, question, '已读现有项目', [])
+        raise AwaitingUserInput()
+    op.invoke_agent = invoke
+    submitted = await op.submit_agent(event, 'coordinator', '做功能')
+    await op.running[submitted['task_id']]
+    row = op.detail(submitted['task_id'])
+    assert row['status'] == 'awaiting_input'
+    assert 'Q1' in row['result'] and 'Q2' in row['result']
+    assert all(r['status'] == 'awaiting_input' for r in op.list())
+    op.deliver_agent_result.assert_awaited_once()

@@ -17,6 +17,10 @@ class WorkbenchStatusTests(unittest.IsolatedAsyncioTestCase):
         self.name = 'astrbot_plugin_shrink'
         self.target = self.plugins / self.name
         self.target.mkdir(parents=True)
+        for relative in ("shrink/services/workbench.py", "shrink/adapters/notifications.py"):
+            guard = self.target / relative
+            guard.parent.mkdir(parents=True, exist_ok=True)
+            guard.write_text("# installed boundary\n", encoding="utf8")
         (self.target / 'main.py').write_text('VALUE = 1\n', encoding='utf-8')
         (self.target / 'metadata.yaml').write_text('name: ' + self.name + '\n', encoding='utf-8')
         self.result = {'ok': True, 'tests_run': 1}
@@ -38,7 +42,7 @@ class WorkbenchStatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_status_draft_not_tested(self):
         status = await self.call('status')
         self.assertEqual(status['plugin'], self.name)
-        self.assertCountEqual(status['draft_files'], ['main.py', 'metadata.yaml'])
+        self.assertCountEqual(status['draft_files'], ['main.py', 'metadata.yaml', 'shrink/services/workbench.py', 'shrink/adapters/notifications.py'])
         self.assertIsNone(status['test'])
         self.assertFalse(status['test_current'])
         self.assertFalse(status['rollback_available'])

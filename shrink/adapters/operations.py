@@ -9,7 +9,7 @@ import httpx
 
 from ..services.workbench import Workbench
 from .deployment import Deployments
-from .agent_tasks import AgentTasks
+from .agent_tasks import AgentTasks, AwaitingUserInput
 from .workbench_runtime import AstrBotWorkbenchRuntime
 from .admin_events import admin_event, admin_candidates
 from ..services.task_context import CURRENT_TASK
@@ -151,9 +151,6 @@ class Operations(AgentTasks):
                 "execution": {"version": 1, "status": "submitted", "task_id": task_id}}
 
     async def _run(self, task_id, event, request, provider):
-        from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
-        from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
-
         token = CURRENT_TASK.set(task_id)
         status, result = "failed", ""
         try:
@@ -164,13 +161,8 @@ class Operations(AgentTasks):
                             if h.agent.name == "shirnk_developer"), None)
             if handoff is None:
                 raise ValueError("AstrBot原生shirnk_developer子代理未配置")
-            wrapper = AgentContextWrapper(
-                context=AstrAgentContext(context=self.context, event=event), tool_call_timeout=90)
             async with asyncio.timeout(1800):
-                async for item in FunctionToolExecutor._execute_handoff(
-                    handoff, wrapper, input=request):
-                    for part in getattr(item, "content", []):
-                        result += getattr(part, "text", "") + "\n"
+                result = await self.invoke_agent(handoff, event, request)
             # Agent prose is not proof that it deployed anything.
             evidence = self.database.rows(
                 "SELECT result FROM operation_events WHERE task_id=? AND action IN ('deploy','rollback')", (task_id,))
@@ -178,6 +170,11 @@ class Operations(AgentTasks):
                            for x in evidence)
             pending = any(json.loads(x["result"]).get("pending") for x in evidence)
             status = "awaiting_deployment" if pending else "completed" if deployed else "needs_attention"
+        except AwaitingUserInput:
+            status = "awaiting_input"
+            question = self.clarifications.get(task_id)
+            result = json.dumps({"status": status, "question": question["question"],
+                                 "context": question["context"]}, ensure_ascii=False)
         except asyncio.CancelledError:
             status, result = "cancelled", "开发任务已取消，保留草稿和已有执行记录。"
         except TimeoutError:
@@ -189,6 +186,7 @@ class Operations(AgentTasks):
                 con.execute("UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?",
                             (status, result, time.time(), task_id))
             CURRENT_TASK.reset(token)
+            self.question_signals.pop(task_id, None)
         if status not in {"cancelled", "awaiting_deployment"}:
             try:
                 from astrbot.api.message_components import Plain
@@ -211,6 +209,23 @@ class Operations(AgentTasks):
         task.cancel()
         await task
         return {"id": task_id, "status": "cancelled"}
+
+    async def cancel_owned(self, event):
+        rows = [r for r in self.list() if r["session"] == event.unified_msg_origin
+                and r["sender"] == str(event.get_sender_id())
+                and r["status"] in {"running", "queued", "waiting", "awaiting_input"}]
+        for row in rows:
+            task = self.running.get(row["id"])
+            if task and not task.done():
+                task.cancel()
+        for row in rows:
+            task = self.running.get(row["id"])
+            if task:
+                await asyncio.gather(task, return_exceptions=True)
+            with self.database.transaction() as con:
+                con.execute("UPDATE operation_tasks SET status='cancelled',delivery='cancelled',"
+                            "finished=? WHERE id=?", (time.time(), row["id"]))
+        return [r["id"] for r in rows]
 
     async def close(self):
         await self.deployments.close()

@@ -29,6 +29,8 @@ from ..services.perception import SELF, Turn, address
 from ..services.reply_text import drop_meta_sentences, humanize, strip_reasoning
 from ..services.skills import tool_step
 from ..services.debounce import Debouncer
+from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup
+from .notifications import Notifications
 
 REPLY_REASONS = {"direct", "engaged", "spontaneous"}
 # The foreground has a short budget; authorized tool work continues in native subagents.
@@ -56,6 +58,8 @@ class ConversationAdapter:
         # The host's own reply_with_quote setting quotes every reply after our hook runs.
         self.host_quotes = host_quotes or (lambda umo: False)
         self.debouncer = Debouncer()
+        self.notifications = Notifications(app)
+        self.active_turns = {}
 
     # ---- receive ---------------------------------------------------------------------------------
     def build_turn(self, event, platform, uid, source, group, message_id):
@@ -141,6 +145,9 @@ class ConversationAdapter:
             self.umos[source] = turn.umo
         app.attachments.capture(turn, list(event.get_messages()))
         event.set_extra("shrink_turn", turn)
+        if event.is_admin() and is_stop_request(turn.text) and (turn.private or turn.addressee == SELF or turn.wake):
+            await self.stop_requested(event, turn)
+            return
         cfg = app.state.settings
         if cfg.collect_enabled and group in cfg.collect_groups:
             for comp in event.get_messages():
@@ -202,13 +209,29 @@ class ConversationAdapter:
             self.app.tasks.error("image_download", exc)
 
     # ---- enrich ----------------------------------------------------------------------------------
+    async def stop_requested(self, event, turn):
+        key = (turn.umo or turn.source, turn.user_id)
+        for previous, task in list(self.active_turns.get(key, [])):
+            previous.set_extra("shrink_cancelled", True)
+            self.disarm_watchdog(previous)
+            task.cancel()
+        self.debouncer.pending.pop(key, None)
+        self.debouncer.replies.pop(key, None)
+        cancelled = await self.app.operations.cancel_owned(event)
+        await self.notifications.send_once(
+            event, turn.id + ":stop",
+            {"status": "cancelled", "cancelled_tasks": len(cancelled),
+             "fact": "已停止当前会话中你交办的运行任务；保留执行记录，不再自动续做。"},
+            request=turn.text, kind="cancelled")
+        event.stop_event()
+
     async def enrich(self, event, req):
         turn = event.get_extra("shrink_turn")
         if not turn or not event.get_extra("shrink_reply"):
             return
         app = self.app
         self.arm_watchdog(event)
-        window = app.context.window(turn)
+        window = app.context.window(turn, recent_only=is_task_followup(turn.text))
         mentioned = [
             u for u in dict.fromkeys(
                 [m["id"] for m in turn.mentions if m["id"] != SELF]
@@ -264,6 +287,14 @@ class ConversationAdapter:
                 app.persona_repository.learned_persona()
             )
         req.system_prompt += "\n\n" + prompt
+        req.system_prompt += "\n\n" + prompt_text("tasks.execution_scope")
+        try:
+            guidance = await app.native_skills.planning_guidance(turn.text)
+            if guidance:
+                req.system_prompt += "\n\n已加载原生 Skill grilling：\n" + guidance
+                event.set_extra("shrink_planning_skill", "grilling")
+        except Exception as exc:
+            app.tasks.error("planning_skill", exc)
         # The plugin owns conversation context; host history may carry leaked or stale replies.
         req.contexts = []
         event.set_extra("shrink_expression_context", {
@@ -284,6 +315,18 @@ class ConversationAdapter:
         task = asyncio.current_task()
         if task is None:
             return
+        turn = event.get_extra("shrink_turn")
+        if turn:
+            key = (turn.umo or turn.source, turn.user_id)
+            entries = self.active_turns.setdefault(key, [])
+            entry = (event, task)
+            entries.append(entry)
+            def finished(_):
+                if entry in entries:
+                    entries.remove(entry)
+                if not entries:
+                    self.active_turns.pop(key, None)
+            task.add_done_callback(finished)
         handle = asyncio.get_running_loop().call_later(REPLY_DEADLINE, self.expire, event, task)
         event.set_extra("shrink_watchdog", handle)
 
@@ -317,34 +360,20 @@ class ConversationAdapter:
             return
         except Exception:
             pass
+        if event.get_extra("shrink_cancelled") or is_stop_request(turn.text):
+            return
         operations = getattr(self.app, "operations", None)
-        steps = event.get_extra("shrink_tools") or []
         if operations and event.is_admin():
             try:
                 existing = event.get_extra("shrink_background_task")
                 if existing:
                     row = operations.detail(existing)
                     fact = f"后台任务{existing}实际状态：{row['status']}，主会话等待结束不会取消后台执行。"
-                elif steps:
-                    import json
-                    await operations.create_agent({
-                        "name": "shirnk_task_coordinator",
-                        "instructions": prompt_text("tasks.coordinator"),
-                        "tools": ["shrink_orchestrate"],
-                    })
-                    context = self.app.context.window(turn).text
-                    submitted = await operations.submit_agent(event, "shirnk_task_coordinator", render(
-                        "tasks.coordinator.request", request=turn.text, context=context[-6000:],
-                        steps=json.dumps(steps, ensure_ascii=False)[-16000:]))
-                    fact = f"已成功提交后台编排任务{submitted['task_id']}，子代理继续处理，完成后回传。尚未完成。"
                 else:
                     await self.send_gave_up(event, turn)
                     return
-                text = await self.app.outbound.compose(fact, request=turn.text, kind='accepted',
-                    scope={'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())})
-                if text and text.strip():
-                    await asyncio.wait_for(event.send(MessageChain([Plain(text)])), 30)
-                    self.app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
+                await self.notifications.send_once(
+                    event, turn.id + ":timeout", fact, request=turn.text, kind="accepted")
                 return
             except Exception as exc:
                 self.app.tasks.error("background_continuation", exc)
@@ -374,6 +403,9 @@ class ConversationAdapter:
             return
         app = self.app
         turn = event.get_extra("shrink_turn")
+        if event.get_extra("shrink_cancelled"):
+            response.completion_text = ""
+            return
         self.disarm_watchdog(event)
         event.set_extra("shrink_final_response", True)
         if getattr(response, "reasoning_content", None):
@@ -397,6 +429,10 @@ class ConversationAdapter:
                              "request": task["request"], "reports_back": not bool(task["parent"])}
             except ValueError:
                 pass
+        steps = event.get_extra("shrink_tools") or []
+        if not execution and steps:
+            execution = {"status": "unverified", "tool_steps": steps,
+                         "note": "以下是工具记录；模型草稿不是执行证据，单步完成不代表整个请求完成"}
         finished = await app.expression.finish(
             response.completion_text or "",
             user_text=turn.text,
@@ -406,6 +442,12 @@ class ConversationAdapter:
             context=event.get_extra("shrink_expression_context"),
             execution=execution,
         )
+        if unsupported_claim(response.completion_text, event.get_extra("shrink_tools"), execution) or (
+                unsupported_claim(finished.text, event.get_extra("shrink_tools"), execution)):
+            # Do not feed an unsupported completion claim to another model as a fact.
+            finished.text = prompt_text("reply.unverified_execution")
+            finished.second = ""
+            finished.meme_id = None
         if finished.meme_id:
             event.set_extra("shrink_selected_meme", finished.meme_id)
         if event.get_extra("shrink_selected_meme") and form != "tool_result" and not finished.skip:
@@ -591,6 +633,21 @@ class ConversationAdapter:
             self.app.tasks.error("episode", exc)
 
     # ---- tools -----------------------------------------------------------------------------------
+    def tool_turn(self, event):
+        from ..services.task_context import CURRENT_TASK
+        task_id = CURRENT_TASK.get()
+        if not task_id:
+            return event.get_extra("shrink_turn")
+        # Background and resumed dashboard events need not contain the original Turn.
+        row = self.app.operations.owned_task(event, task_id)
+        scope = self.app.outbound.resolve_scope(
+            {"session": row["session"], "sender": row["sender"]})
+        if not scope:
+            return None
+        from types import SimpleNamespace
+        return SimpleNamespace(source=scope["source"], user_id=scope["user_id"],
+                               private=":private:" in scope["source"])
+
     async def remember(self, event, text: str):
         turn = event.get_extra("shrink_turn")
         if not turn or not re.search(r"记住|记一下|记着|别忘|remember", turn.text, re.I):
@@ -605,13 +662,13 @@ class ConversationAdapter:
         return prompt_text("toolret.remember_saved")
 
     async def chat_history(self, event, keyword="", person="", days=3):
-        turn = event.get_extra("shrink_turn")
+        turn = self.tool_turn(event)
         if not turn:
             return prompt_text("toolret.no_turn")
         return self.app.tools.history(turn.source, keyword, person, days)
 
     async def lookup(self, event, query):
-        turn = event.get_extra("shrink_turn")
+        turn = self.tool_turn(event)
         if not turn:
             return prompt_text("toolret.no_turn")
         return await self.app.tools.lookup(
@@ -630,6 +687,6 @@ class ConversationAdapter:
         return render("toolret.meme_found", title=row['title'])
 
     async def run_python(self, event, code):
-        if not event.get_extra("shrink_turn"):
+        if not self.tool_turn(event):
             return prompt_text("toolret.no_turn")
         return await self.app.tools.run_python(code)

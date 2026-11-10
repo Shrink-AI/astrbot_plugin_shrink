@@ -6,6 +6,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 from .shrink.prompts import text as prompt_text, tool_doc
 from .shrink.adapters.host import PluginHost
+from .shrink.adapters.tool_notices import ToolNoticeHooks
 
 
 @register("astrbot_plugin_shrink", "Shrink", "石英：人格、记忆、学习和表情", "0.7.0")
@@ -63,6 +64,10 @@ class ShrinkPlugin(Star):
         await self.host.conversation.enrich(event, req)
         if event.is_admin():
             req.system_prompt = (req.system_prompt or "") + "\n" + prompt_text("tasks.admin_hint")
+
+    @filter.on_using_llm_tool()
+    async def before_tool(self, event, tool, tool_args):
+        await ToolNoticeHooks.notify_before_tool(self, event, tool, tool_args)
 
     @filter.llm_tool(name="shirnk_plugin_workbench")
     @tool_doc("shirnk_plugin_workbench", action="string", name="string", path="string", content="string")

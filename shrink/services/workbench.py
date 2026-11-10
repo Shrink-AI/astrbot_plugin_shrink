@@ -81,7 +81,52 @@ class Workbench:
         expected = metadata.get('name')
         if registered and registered != [expected]:
             raise ValueError('main.py必须注册且只注册本扩展名')
+        if full_name == 'astrbot_plugin_shrink':
+            self.check_architecture(draft)
         return {'ok': True, 'python_files': len(trees), 'validation': 'syntax_only', 'functional_test': 'not_run'}
+
+    def check_architecture(self, draft):
+        """Enforced by the installed workbench, never by the draft being tested."""
+        installed = self.plugins / 'astrbot_plugin_shrink'
+        for relative in ('shrink/services/workbench.py', 'shrink/adapters/notifications.py'):
+            old, new = installed / relative, draft / relative
+            if not old.is_file() or not new.is_file() or old.read_bytes() != new.read_bytes():
+                raise ValueError(f'架构边界文件需维护端审查，工作台不能自行修改或删除：{relative}')
+        sending = {'send', 'send_message', 'send_group_msg', 'send_private_msg', 'call_action'}
+        for path in draft.rglob('*.py'):
+            relative = path.relative_to(draft)
+            if 'tests' in relative.parts or path.name.startswith('test_'):
+                continue
+            tree = ast.parse(path.read_text('utf8'))
+            if relative.parts[0] == 'shrink':
+                for node in ast.walk(tree):
+                    if isinstance(node, (ast.Import, ast.ImportFrom)):
+                        modules = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                                   else [node.module or ''])
+                        for module in modules:
+                            if 'astrbot_plugin_' in module or module.startswith('data.plugins'):
+                                raise ValueError(f'{relative}：不得导入其他插件，通过能力协议访问')
+                            if len(relative.parts) > 1 and relative.parts[1] in {'services', 'persistence', 'api'}:
+                                if module.startswith(('astrbot', 'fastapi')) and not (
+                                        relative.parts[1] == 'api' and module.startswith('fastapi')):
+                                    raise ValueError(f'{relative}：宿主依赖必须放在adapters层')
+                                if 'adapters' in module.split('.'):
+                                    raise ValueError(f'{relative}：业务层不能反向导入adapters')
+            original = installed / relative
+            old_tree = ast.parse(original.read_text('utf8')) if original.is_file() else ast.Module(body=[])
+            # Existing transport code is grandfathered by its whole function body, not file name.
+            old_functions = {ast.dump(n) for n in ast.walk(old_tree)
+                             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+            allowed_calls = set()
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    if ast.dump(node) in old_functions:
+                        allowed_calls.update(id(n) for n in ast.walk(node))
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr in sending and id(node) not in allowed_calls):
+                    raise ValueError(f'{relative}:{node.lineno}：新增或修改的对外发送必须调用'
+                                     'notifications.send_once，不得直接发送；后台结果先持久化')
 
     async def activate(self, manager, name):
         if self.runtime is None:

@@ -18,6 +18,10 @@ async def test_core_deployment_snapshots_tested_draft_before_starting_worker(tmp
     plugins = tmp_path / "plugins"
     target = plugins / "astrbot_plugin_shrink"
     target.mkdir(parents=True)
+    for relative in ("shrink/services/workbench.py", "shrink/adapters/notifications.py"):
+        guard = target / relative
+        guard.parent.mkdir(parents=True, exist_ok=True)
+        guard.write_text("# installed boundary\n", encoding="utf8")
     (target / "main.py").write_text("VALUE=1\n")
     (target / "metadata.yaml").write_text("name: astrbot_plugin_shrink\n")
     work = Workbench(tmp_path / "workbench", plugins, AsyncMock(return_value={"ok": True}))
@@ -46,6 +50,10 @@ async def test_worker_restores_prior_source_after_failed_reload_or_interruption(
     plugins = tmp_path / "plugins"
     target = plugins / "astrbot_plugin_shrink"
     target.mkdir(parents=True)
+    for relative in ("shrink/services/workbench.py", "shrink/adapters/notifications.py"):
+        guard = target / relative
+        guard.parent.mkdir(parents=True, exist_ok=True)
+        guard.write_text("# installed boundary\n", encoding="utf8")
     (target / "main.py").write_text("VALUE=1\n")
     (target / "metadata.yaml").write_text(f"name: {target.name}\n")
     (target / "runtime.json").write_text('{"keep":true}')
@@ -66,6 +74,7 @@ async def test_worker_restores_prior_source_after_failed_reload_or_interruption(
         before = directory / "before"
         before.mkdir()
         for source, relative in work.source_files(target):
+            (before / relative).parent.mkdir(parents=True, exist_ok=True)
             (before / relative).write_bytes(source.read_bytes())
         (target / "main.py").write_text("VALUE=2\n")
         (directory / "result.json").write_text(json.dumps({"status": "running", "started": time.time()}))
@@ -108,6 +117,10 @@ async def test_worker_restores_prior_source_after_failed_reload_or_interruption(
 async def test_manual_core_rollback_is_snapshotted_and_conflict_checked(tmp_path):
     target = tmp_path / "plugins" / "astrbot_plugin_shrink"
     target.mkdir(parents=True)
+    for relative in ("shrink/services/workbench.py", "shrink/adapters/notifications.py"):
+        guard = target / relative
+        guard.parent.mkdir(parents=True, exist_ok=True)
+        guard.write_text("# installed boundary\n", encoding="utf8")
     (target / "main.py").write_text("VALUE=2")
     (target / "metadata.yaml").write_text(f"name: {target.name}")
     work = Workbench(tmp_path / "workbench", target.parent)
@@ -116,6 +129,9 @@ async def test_manual_core_rollback_is_snapshotted_and_conflict_checked(tmp_path
     backup.mkdir(parents=True)
     (backup / "main.py").write_text("VALUE=1")
     (backup / "metadata.yaml").write_text(f"name: {target.name}")
+    for relative in ("shrink/services/workbench.py", "shrink/adapters/notifications.py"):
+        (backup / relative).parent.mkdir(parents=True, exist_ok=True)
+        (backup / relative).write_bytes((target / relative).read_bytes())
     deployments = Deployments(SimpleNamespace(workbench=work, app=SimpleNamespace(state=SimpleNamespace(root=tmp_path))))
     event = SimpleNamespace(unified_msg_origin="test", get_sender_id=lambda: "123")
     with patch.object(deployments, "launch", return_value=123):

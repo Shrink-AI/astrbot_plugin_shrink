@@ -39,8 +39,29 @@ class NativeSkills:
         ) + f"---\n# {row['title']}\n\n{row['steps']}\n"
 
     async def start(self):
-        await self.migrate_names()
         self.worker = asyncio.create_task(self.loop())
+
+    async def install_bundled(self):
+        from pathlib import Path
+        inventory = await self.native.call("skills", "list")
+        existing = {r["name"] for r in inventory.get("skills", [])}
+        for file in (Path(__file__).resolve().parents[2] / "bundled_skills").glob("*/SKILL.md"):
+            if file.parent.name in existing:
+                continue
+            await self.native.call("skills", "create",
+                                   {"name": file.parent.name, "content": file.read_text("utf8")})
+            await self.native.call("skills", "update", {"name": file.parent.name, "active": True})
+
+    async def planning_guidance(self, text):
+        if not re.search(r"grill|推敲|压力测试|(?:开发|编写|写|做|修改|改|实现|制作|构建|设计).{0,24}"
+                         r"(?:插件|游戏|需求|功能|软件|程序|agent)|(?:插件|游戏|agent).{0,24}(?:修改|开发|需求)",
+                         text or "", re.I):
+            return ""
+        inventory = await self.native.call("skills", "list")
+        if not any(r.get("name") == "grilling" and r.get("active") for r in inventory.get("skills", [])):
+            return ""
+        document = await self.native.call("skills", "read", {"name": "grilling", "path": "SKILL.md"})
+        return document["content"]
 
     async def migrate_names(self):
         # AstrBot's install and file APIs disagree on Unicode names. Keep the
@@ -80,6 +101,8 @@ class NativeSkills:
     async def loop(self):
         while True:
             try:
+                await self.install_bundled()
+                await self.migrate_names()
                 await self.sync()
                 self.app.state.put("native_skills_error", "")
             except Exception as exc:
