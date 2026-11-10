@@ -201,13 +201,13 @@ networks:
 
 ## 数据
 
-通过 HTTPS 域名访问后台时，在插件数据目录创建 `dashboard.json`：
+通过域名访问后台时，在插件数据目录创建 `dashboard.json`，协议须与浏览器实际访问地址一致：
 
 ```json
 {"public_origin": "https://dashboard.example.com"}
 ```
 
-重载插件后，该域名加入精确的 Host 和 Origin 白名单，本机访问继续可用。反向代理需保留原始 Host，并将请求转发到后台 HTTP 端口 6186；TLS 应在反向代理终止，不能将 HTTPS 直接转发到该 HTTP 端口。域名登录使用 Secure Cookie，登录、来源和 CSRF 校验仍然生效。此文件属于运行配置，不提交到仓库。
+重载插件后，该域名加入精确的 Host 和 Origin 白名单，本机访问继续可用。仅映射 HTTP 时，可显式配置 `http://dashboard.example.com`；HTTP 不加密密码和会话数据。反向代理需保留原始 Host，并将请求转发到后台 HTTP 端口 6186；TLS 应在反向代理终止，不能将 HTTPS 直接转发到该 HTTP 端口。HTTPS 登录使用 Secure Cookie，登录、来源和 CSRF 校验仍然生效。此文件属于运行配置，不提交到仓库。
 
 运行数据在 `data/plugin_data/astrbot_plugin_shrink/`：
 

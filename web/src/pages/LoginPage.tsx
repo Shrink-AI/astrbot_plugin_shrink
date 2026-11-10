@@ -18,7 +18,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
         <input type="password" autoComplete="current-password" required autoFocus value={password} onChange={e => setPassword(e.target.value)} /></label>
       {error && <div role="alert" className="banner error">{error}</div>}
       <button className="primary" disabled={busy}>登录</button>
-      <small>仅限通过 SSH 通道在本机访问。</small>
+      <small>使用管理员密码登录石英后台。</small>
     </form>
   </main>;
 }

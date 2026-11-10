@@ -23,11 +23,11 @@ def create_app(
         public_origin = json.loads(config.read_text(encoding="utf-8-sig")).get("public_origin", "")
         if public_origin:
             parsed = urlsplit(public_origin)
-            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            if (parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password
                     or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
-                raise ValueError("dashboard public_origin 必须为 HTTPS 站点地址")
+                raise ValueError("dashboard public_origin 必须为 HTTP 或 HTTPS 站点地址")
             allowed_hosts = allowed_hosts | {parsed.netloc}
-            origins.add("https://" + parsed.netloc)
+            origins.add(parsed.scheme + "://" + parsed.netloc)
     app = FastAPI(title="石英", docs_url=None, redoc_url=None, openapi_url=None)
     install_auth(app, application.state, application.sessions, allowed_hosts, origins)
     app.include_router(
