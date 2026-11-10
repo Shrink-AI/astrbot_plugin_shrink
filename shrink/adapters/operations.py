@@ -146,7 +146,7 @@ class Operations(AgentTasks):
         self.running[task_id] = asyncio.create_task(self._run(task_id, event, request, provider))
         if not CURRENT_TASK.get():
             event.set_extra('shrink_background_task', task_id)
-        return {"task_id": task_id, "status": "queued", "deadline_seconds": 1800,
+        return {"task_id": task_id, "status": "queued", "deadline_seconds": None,
                 "completed": False,
                 "execution": {"version": 1, "status": "submitted", "task_id": task_id}}
 
@@ -161,8 +161,7 @@ class Operations(AgentTasks):
                             if h.agent.name == "shirnk_developer"), None)
             if handoff is None:
                 raise ValueError("AstrBot原生shirnk_developer子代理未配置")
-            async with asyncio.timeout(1800):
-                result = await self.invoke_agent(handoff, event, request)
+            result = await self.invoke_agent(handoff, event, request)
             # Agent prose is not proof that it deployed anything.
             evidence = self.database.rows(
                 "SELECT result FROM operation_events WHERE task_id=? AND action IN ('deploy','rollback')", (task_id,))
@@ -178,7 +177,7 @@ class Operations(AgentTasks):
         except asyncio.CancelledError:
             status, result = "cancelled", "开发任务已取消，保留草稿和已有执行记录。"
         except TimeoutError:
-            status, result = "timed_out", "开发任务达到30分钟上限，保留草稿，可续做。"
+            status, result = "timed_out", "开发任务的一次请求超时，草稿和执行记录已保留，请核对后续做。"
         except Exception as exc:
             result = f"{type(exc).__name__}: {str(exc)[:2000]}"
         finally:

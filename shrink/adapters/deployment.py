@@ -108,7 +108,35 @@ class Deployments:
         return {"ok": True, "activated": False, "pending": True, "deployment_id": job_id,
                 "pid": pid, "message": "独立执行器已接手；健康验证完成后回传结果"}
 
+    async def reload_core(self, event, mode, task_id=""):
+        if not event.is_admin():
+            raise ValueError("仅管理员可重载")
+        if mode not in {"hot", "cold"}:
+            raise ValueError("mode 必须是 hot 或 cold")
+        if any(r["status"] in {"queued", "running", "issued"} for r in self.listing()):
+            raise ValueError("已有部署或重载等待完成")
+        active = self.app.database.rows(
+            "SELECT id FROM operation_tasks WHERE status IN ('queued','running','waiting','testing','deploying')")
+        if any(r['id'] != task_id for r in active):
+            raise ValueError("其他后台任务仍在执行，请结束或明确取消后重载")
+        job_id = uuid.uuid4().hex
+        directory = self.root / job_id
+        directory.mkdir()
+        marker = self.root / "generation"
+        request = {"id": job_id, "task_id": task_id, "plugin": "astrbot_plugin_shrink",
+                   "action": mode, "session": event.unified_msg_origin,
+                   "sender": str(event.get_sender_id()), "created": time.time(),
+                   "database": str(self.app.state.root / "shrink.db"),
+                   "config": str(self.operations.workbench.plugins.parent / "cmd_config.json"),
+                   "generation": marker.read_text() if marker.exists() else ""}
+        (directory / "request.json").write_text(json.dumps(request), encoding="utf-8")
+        shutil.copy2(Path(__file__).with_name("reload_worker.py"), directory / "worker.py")
+        self.launch(directory)
+        return {"pending": True, "completed": False, "reload_id": job_id,
+                "mode": mode, "execution": {"version": 1, "status": "submitted", "task_id": job_id}}
+
     async def start(self):
+        (self.root / "generation").write_text(uuid.uuid4().hex, encoding="utf-8")
         self.worker = asyncio.create_task(self.loop())
 
     @staticmethod
@@ -121,13 +149,13 @@ class Deployments:
         while True:
             for row in self.listing():
                 directory = self.root / row["id"]
-                if row["status"] in {"queued", "running"} and not self.alive(directory):
+                if row["status"] in {"queued", "running", "issued"} and not self.alive(directory):
                     try:
                         self.launch(directory)
                     except OSError as exc:
                         self.app.tasks.error("deployment_restart", exc)
                     continue
-                if row["status"] not in {"completed", "rolled_back", "failed"} or (directory / "reported").exists():
+                if row["status"] not in {"completed", "rolled_back", "failed", "unknown"} or (directory / "reported").exists():
                     continue
                 try:
                     result = json.dumps(row, ensure_ascii=False)

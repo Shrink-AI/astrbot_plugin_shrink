@@ -60,6 +60,16 @@ class Participation:
         }
         key = (turn.source, turn.user_id)
         addressed_self = turn.addressee == SELF or (turn.wake and not turn.addressee)
+        if self._group_blacklisted(turn):
+            # Name recognition and quoted replies are not explicit calls in muted groups.
+            # ``wake`` is supplied by the host for @ / wake commands; native commands
+            # retain their own handlers before this participation service is called.
+            explicit = any(m.get("id") == SELF for m in turn.mentions) or (
+                turn.wake and turn.addressee in ("", SELF)
+            )
+            if not explicit:
+                return "group_blacklisted"
+            addressed_self = True
         if turn.speaker_bot:
             # Other bots get an answer when they call 石英, at most once per window, never chatter.
             if addressed_self and self._bot_budget(turn.source):
@@ -71,8 +81,6 @@ class Participation:
         if turn.addressee and turn.addressee != SELF:
             self.other_conversations[key] = now + FOLLOWUP_SECONDS
             return "addressed_other"
-        if self._group_blacklisted(turn):
-            return "group_blacklisted"
         # The latest addressing wins: after turning to someone else, follow-ups belong to them.
         if key in self.other_conversations:
             return "other_conversation_followup"

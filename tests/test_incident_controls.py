@@ -90,7 +90,7 @@ async def test_delegation_leaves_acceptance_to_final_reply(app, host_modules):
     notices = Notifications(app)
     plugin = SimpleNamespace(host=SimpleNamespace(conversation=SimpleNamespace(notifications=notices)))
     event = Event()
-    for name in ("shrink_develop", "shrink_orchestrate"):
+    for name in ("shrink_develop", "shrink_orchestrate", "shrink_reload"):
         await ToolNoticeHooks.notify_before_tool(plugin, event, SimpleNamespace(name=name), {})
     event.set_extra("shrink_background_task", "submitted-task")
     await ToolNoticeHooks.notify_before_tool(plugin, event, SimpleNamespace(name="read"), {})
@@ -213,3 +213,18 @@ async def test_fallback_claim_is_replaced_before_output(app, host_modules, text)
     response = SimpleNamespace(tools_call_name=[], role='assistant', completion_text=text, result_chain=None)
     await adapter.response(Event(), response)
     assert response.completion_text == '这轮没有拿到执行记录，还不能说已经做了。'
+
+
+@pytest.mark.asyncio
+async def test_foreground_has_no_deadline_but_remains_cancellable(app, host_modules, monkeypatch):
+    adapter = host_modules.ConversationAdapter(app, "test")
+    event = Event()
+    loop = asyncio.get_running_loop()
+    timer = Mock(side_effect=AssertionError("foreground must not arm a deadline"))
+    monkeypatch.setattr(loop, "call_later", timer)
+    adapter.arm_watchdog(event)
+    adapter.arm_watchdog(event)
+    key = (event.unified_msg_origin, "qq:123")
+    assert len(adapter.active_turns[key]) == 1
+    assert adapter.active_turns[key][0][1] is asyncio.current_task()
+    timer.assert_not_called()

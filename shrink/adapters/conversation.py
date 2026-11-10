@@ -34,7 +34,7 @@ from .notifications import Notifications
 
 REPLY_REASONS = {"direct", "engaged", "spontaneous"}
 # The foreground has a short budget; authorized tool work continues in native subagents.
-REPLY_DEADLINE = 100
+REPLY_DEADLINE = None
 # People rarely attach a sticker to most messages; only sometimes offer the sticker list.
 MEME_OFFER = 0.35
 EXPLICIT_MEME = re.compile(r"表情|反应图|来张图|发张图")
@@ -309,8 +309,8 @@ class ConversationAdapter:
 
     # ---- watchdog --------------------------------------------------------------------------------
     def arm_watchdog(self, event):
-        """Cancel the event's pipeline task if no final answer arrives in time."""
-        if event.get_extra("shrink_watchdog"):
+        """Track the pipeline for explicit cancellation, without a wall-clock deadline."""
+        if event.get_extra("shrink_turn_tracked"):
             return
         task = asyncio.current_task()
         if task is None:
@@ -327,8 +327,7 @@ class ConversationAdapter:
                 if not entries:
                     self.active_turns.pop(key, None)
             task.add_done_callback(finished)
-        handle = asyncio.get_running_loop().call_later(REPLY_DEADLINE, self.expire, event, task)
-        event.set_extra("shrink_watchdog", handle)
+        event.set_extra("shrink_turn_tracked", True)
 
     @staticmethod
     def disarm_watchdog(event):

@@ -13,7 +13,7 @@ class ToolNoticeHooks:
         name = getattr(tool, "name", "")
         # Background submission returns immediately; its normal reply owns acceptance.
         # Do not send a second "starting work" message before that receipt.
-        if name in {"shrink_find_meme", "shrink_develop", "shrink_orchestrate"}:
+        if name in {"shrink_find_meme", "shrink_develop", "shrink_orchestrate", "shrink_reload"}:
             return
         if event.get_extra("shrink_background_task"):
             return

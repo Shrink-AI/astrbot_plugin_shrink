@@ -358,3 +358,37 @@ async def test_child_questions_are_batched_by_parent(runtime):
     assert 'Q1' in row['result'] and 'Q2' in row['result']
     assert all(r['status'] == 'awaiting_input' for r in op.list())
     op.deliver_agent_result.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_has_no_total_deadline(runtime, monkeypatch):
+    op, event, _ = runtime
+    await create(op)
+    op.invoke_agent = AsyncMock(return_value="done")
+    monkeypatch.setattr(asyncio, "timeout", Mock(side_effect=AssertionError("no task deadline")))
+    result = await op.submit_agent(event, "researcher", "long task")
+    await op.running[result["task_id"]]
+    assert result["deadline_seconds"] is None
+    assert op.detail(result["task_id"])["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_reload_validates_admin_busy_and_persists_request(runtime):
+    import json
+    op, event, _ = runtime
+    deployments = op.deployments
+    deployments.launch = Mock(return_value=123)
+    event.is_admin = lambda: False
+    with pytest.raises(ValueError):
+        await deployments.reload_core(event, "hot")
+    event.is_admin = lambda: True
+    with pytest.raises(ValueError):
+        await deployments.reload_core(event, "invalid")
+    result = await deployments.reload_core(event, "cold")
+    directory = deployments.root / result["reload_id"]
+    assert json.loads((directory / "request.json").read_text())["action"] == "cold"
+    assert (directory / "worker.py").exists()
+    assert result["pending"] and not result["completed"]
+    with pytest.raises(ValueError):
+        await deployments.reload_core(event, "hot")
+    deployments.launch.assert_called_once()

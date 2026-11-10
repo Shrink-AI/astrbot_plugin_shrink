@@ -82,15 +82,13 @@ async def run(directory):
                   "finished": time.time()})
             return
         # Let the native agent finish its tool result before unloading its caller.
-        while time.time() < request["created"] + 1800:
+        while True:
             with sqlite3.connect(request["database"]) as connection:
                 row = connection.execute("SELECT status FROM operation_tasks WHERE id=?",
                                          (request["task_id"],)).fetchone()
             if not row or row[0] not in {"queued", "running", "testing", "deploying"}:
                 break
             await asyncio.sleep(1)
-        else:
-            raise RuntimeError("调用任务未在30分钟内结束，未重载核心")
         await asyncio.sleep(2)
         expected = directory / "workbench" / "baselines" / (request["plugin"] + ".json")
         if json.loads(expected.read_text("utf-8")) != workbench.fingerprints(target):

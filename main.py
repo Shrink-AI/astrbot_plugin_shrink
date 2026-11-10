@@ -117,6 +117,22 @@ class ShrinkPlugin(Star):
         except (ValueError, TypeError) as exc:
             return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
 
+    @filter.llm_tool(name="shrink_reload")
+    async def reload_core(self, event: AstrMessageEvent, mode: str = "hot"):
+        """管理员要求重载时使用。hot 仅重载石英核心；cold 重启整个 AstrBot，会暂时断开 QQ。异步执行，提交不等于重载成功，结果由统一表达链路回传。其他任务运行时拒绝。
+
+        Args:
+            mode(string): hot 或 cold；默认 hot。只有用户要求重启 AstrBot 时选择 cold。
+        """
+        import json
+        from .shrink.services.task_context import CURRENT_TASK
+        try:
+            result = await self.host.operations.deployments.reload_core(event, mode, CURRENT_TASK.get() or "")
+            self.host.operations.record("reload:" + mode, result=json.dumps(result))
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+
     @filter.llm_tool(name="shrink_native_manage")
     @tool_doc("shrink_native_manage", resource="string", action="string", arguments="string", confirmed="boolean")
     async def native_manage(self, event: AstrMessageEvent, resource: str, action: str,

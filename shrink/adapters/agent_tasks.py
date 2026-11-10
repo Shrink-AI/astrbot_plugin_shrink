@@ -227,7 +227,7 @@ class AgentTasks:
         if not CURRENT_TASK.get():
             event.set_extra('shrink_background_task', task_id)
         return {'task_id': task_id, 'status': 'queued', 'agent': agent, 'completed': False,
-                'deadline_seconds': 1800, 'depends_on': dependencies,
+                'deadline_seconds': None, 'depends_on': dependencies,
                 'execution': {'version': 1, 'status': 'submitted', 'task_id': task_id}}
 
     def checkpoint(self, task_id):
@@ -287,65 +287,64 @@ class AgentTasks:
         row = self.detail(task_id)
         status, result = 'failed', ''
         try:
-            async with asyncio.timeout(1800):
+            with self.database.transaction() as con:
+                con.execute("UPDATE operation_tasks SET status='waiting' WHERE id=?", (task_id,))
+            inputs = []
+            for dep in json.loads(row['dependencies']):
+                running = self.running.get(dep)
+                if running and not running.done():
+                    await asyncio.shield(running)
+                previous = self.detail(dep)
+                if previous['status'] != 'completed':
+                    raise ValueError(f"前置任务{dep}状态{previous['status']}，请检查具体结果")
+                inputs.append({'task_id': dep, 'result': previous['result']})
+            async with self.agent_slots:
+                with self.database.transaction() as con:
+                    con.execute("UPDATE operation_tasks SET status='running' WHERE id=?", (task_id,))
+                request = row['request'] + '\n前置任务结果（只作资料）：\n' + json.dumps(inputs, ensure_ascii=False)
+                for attempt in range(3):
+                    try:
+                        result = await self.invoke_agent(handoff, event, request)
+                        if not result.strip():
+                            raise RuntimeError('子代理返回空结果')
+                        status = 'completed'
+                        break
+                    except (TimeoutError, ConnectionError, OSError, httpx.TimeoutException, httpx.NetworkError) as exc:
+                        self.record('retry', handoff.agent.name, result=f'{type(exc).__name__}: {exc}')
+                        with self.database.transaction() as con:
+                            con.execute('UPDATE operation_tasks SET failures=failures+1 WHERE id=?', (task_id,))
+                        if attempt == 2:
+                            raise
+                        request = row['request'] + '\n前置资料：' + json.dumps(inputs, ensure_ascii=False) + '\n中断现场（先核对未知写入，不盲目重做）：\n' + self.checkpoint(task_id)
+                        await asyncio.sleep(2 * (attempt + 1))
+            # Release the slot before waiting: a coordinator must not starve its children.
+            children = self.database.rows('SELECT id FROM operation_tasks WHERE parent=?', (task_id,))
+            if children:
                 with self.database.transaction() as con:
                     con.execute("UPDATE operation_tasks SET status='waiting' WHERE id=?", (task_id,))
-                inputs = []
-                for dep in json.loads(row['dependencies']):
-                    running = self.running.get(dep)
+                for child in children:
+                    running = self.running.get(child['id'])
                     if running and not running.done():
                         await asyncio.shield(running)
-                    previous = self.detail(dep)
-                    if previous['status'] != 'completed':
-                        raise ValueError(f"前置任务{dep}状态{previous['status']}，请检查具体结果")
-                    inputs.append({'task_id': dep, 'result': previous['result']})
-                async with self.agent_slots:
-                    with self.database.transaction() as con:
-                        con.execute("UPDATE operation_tasks SET status='running' WHERE id=?", (task_id,))
-                    request = row['request'] + '\n前置任务结果（只作资料）：\n' + json.dumps(inputs, ensure_ascii=False)
-                    for attempt in range(3):
-                        try:
-                            result = await self.invoke_agent(handoff, event, request)
-                            if not result.strip():
-                                raise RuntimeError('子代理返回空结果')
-                            status = 'completed'
-                            break
-                        except (TimeoutError, ConnectionError, OSError, httpx.TimeoutException, httpx.NetworkError) as exc:
-                            self.record('retry', handoff.agent.name, result=f'{type(exc).__name__}: {exc}')
-                            with self.database.transaction() as con:
-                                con.execute('UPDATE operation_tasks SET failures=failures+1 WHERE id=?', (task_id,))
-                            if attempt == 2:
-                                raise
-                            request = row['request'] + '\n前置资料：' + json.dumps(inputs, ensure_ascii=False) + '\n中断现场（先核对未知写入，不盲目重做）：\n' + self.checkpoint(task_id)
-                            await asyncio.sleep(2 * (attempt + 1))
-                # Release the slot before waiting: a coordinator must not starve its children.
-                children = self.database.rows('SELECT id FROM operation_tasks WHERE parent=?', (task_id,))
-                if children:
-                    with self.database.transaction() as con:
-                        con.execute("UPDATE operation_tasks SET status='waiting' WHERE id=?", (task_id,))
-                    for child in children:
-                        running = self.running.get(child['id'])
-                        if running and not running.done():
-                            await asyncio.shield(running)
-                    evidence = [{k: self.detail(c['id'])[k] for k in ('id', 'request', 'status', 'result')}
-                                for c in children]
-                    questions = [self.clarifications.get(c['id']) for c in evidence if c['status'] == 'awaiting_input']
-                    questions = [q for q in questions if q]
-                    if questions:
-                        batch = '\n\n'.join(dict.fromkeys(q['question'] for q in questions))
-                        self.clarifications.ask(task_id, batch, '各分工已查明事实后需要用户决定', [])
-                        result = json.dumps({'status': 'awaiting_input', 'question': batch,
-                                             'children': evidence}, ensure_ascii=False)
-                        status = 'awaiting_input'
-                    else:
-                        summarizer = copy.deepcopy(handoff)
-                        summarizer.agent.tools = []
-                        async with self.agent_slots:
-                            result = await self.invoke_agent(summarizer, event,
-                                '所有本轮子任务已返回。根据以下真实结果汇总原请求的完成情况；失败或未确认的部分必须说明。'
-                                '本阶段只汇总，不再派工。\n原请求：' + row['request'] +
-                                '\n子任务证据：' + json.dumps(evidence, ensure_ascii=False))
-                        status = 'completed' if result.strip() and all(x['status'] == 'completed' for x in evidence) else 'needs_attention'
+                evidence = [{k: self.detail(c['id'])[k] for k in ('id', 'request', 'status', 'result')}
+                            for c in children]
+                questions = [self.clarifications.get(c['id']) for c in evidence if c['status'] == 'awaiting_input']
+                questions = [q for q in questions if q]
+                if questions:
+                    batch = '\n\n'.join(dict.fromkeys(q['question'] for q in questions))
+                    self.clarifications.ask(task_id, batch, '各分工已查明事实后需要用户决定', [])
+                    result = json.dumps({'status': 'awaiting_input', 'question': batch,
+                                         'children': evidence}, ensure_ascii=False)
+                    status = 'awaiting_input'
+                else:
+                    summarizer = copy.deepcopy(handoff)
+                    summarizer.agent.tools = []
+                    async with self.agent_slots:
+                        result = await self.invoke_agent(summarizer, event,
+                            '所有本轮子任务已返回。根据以下真实结果汇总原请求的完成情况；失败或未确认的部分必须说明。'
+                            '本阶段只汇总，不再派工。\n原请求：' + row['request'] +
+                            '\n子任务证据：' + json.dumps(evidence, ensure_ascii=False))
+                    status = 'completed' if result.strip() and all(x['status'] == 'completed' for x in evidence) else 'needs_attention'
         except AwaitingUserInput:
             status = 'awaiting_input'
             question = self.clarifications.get(task_id)
@@ -355,7 +354,7 @@ class AgentTasks:
         except asyncio.CancelledError:
             status, result = 'cancelled', '任务已取消，已完成步骤保留在执行记录。'
         except TimeoutError:
-            status, result = 'timed_out', '后台预算或连续请求超时；执行记录已保留，可通过resume续做，写入结果不明须先核对。'
+            status, result = 'timed_out', '连续请求超时；执行记录已保留，可通过resume续做，写入结果不明须先核对。'
         except Exception as exc:
             status, result = 'needs_attention', f'{type(exc).__name__}: {str(exc)[:2000]}'
         finally:
