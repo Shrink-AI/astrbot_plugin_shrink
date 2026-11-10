@@ -137,6 +137,12 @@ def test_sandbox_runs_code_and_reports_errors():
     bad = sandbox.run("1/0")
     assert "ZeroDivisionError" in bad["stderr"] and bad["exit"] != 0
 
+def test_plugin_capacity_keeps_explicit_upper_bound():
+    assert sandbox.PLUGIN_LIMIT == 8 * 1024 * 1024
+    files = {f"part{i}.py": "" for i in range(513)}
+    with pytest.raises(ValueError, match="513 exceeds 512"):
+        sandbox.test_plugin(files)
+
 
 def test_sandbox_stops_runaway_code(monkeypatch):
     monkeypatch.setattr(sandbox, "WALL_SECONDS", 1)

@@ -25,7 +25,8 @@ MEMORY_BYTES = 512 * 1024 * 1024
 FILE_BYTES = 5 * 1024 * 1024
 OUTPUT_LIMIT = 6000
 CODE_LIMIT = 8000
-PLUGIN_LIMIT = 2 * 1024 * 1024
+PLUGIN_LIMIT = 8 * 1024 * 1024
+PLUGIN_FILE_LIMIT = 512
 SLOTS = threading.BoundedSemaphore(2)
 
 
@@ -132,8 +133,10 @@ def run(code):
 def test_plugin(files):
     """Run authored tests against the installed AstrBot package, without bot data."""
     from pathlib import Path
-    if not isinstance(files, dict) or not files or len(files) > 150:
+    if not isinstance(files, dict) or not files:
         raise ValueError("invalid plugin files")
+    if len(files) > PLUGIN_FILE_LIMIT:
+        raise ValueError(f"plugin file count {len(files)} exceeds {PLUGIN_FILE_LIMIT}")
     if not any(Path(name).name.startswith("test_") and name.endswith(".py") for name in files):
         raise ValueError("插件必须提供 test_*.py 功能测试")
     with tempfile.TemporaryDirectory(prefix="plugin-test-") as directory:
