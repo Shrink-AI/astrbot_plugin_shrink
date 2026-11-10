@@ -14,7 +14,7 @@ from ..services.memes import MAX_IMAGE_BYTES
 from .schemas import Login, PasswordChange
 
 
-def install_auth(app, state, sessions, allowed_hosts):
+def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None):
     ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=1)
     if not state.get("admin_hash"):
         password = secrets.token_urlsafe(24)
@@ -25,7 +25,7 @@ def install_auth(app, state, sessions, allowed_hosts):
             file.write(password + "\n")
     attempts = deque()
     auth_lock = asyncio.Lock()
-    allowed_origins = {"http://" + host for host in allowed_hosts}
+    allowed_origins = allowed_origins or {"http://" + host for host in allowed_hosts}
     cookie_name = "shrink_session"
 
     @app.middleware("http")
@@ -83,7 +83,8 @@ def install_auth(app, state, sessions, allowed_hosts):
             sessions.rotate(old, hashlib.sha256(token.encode()).hexdigest(), csrf, now)
             response = JSONResponse({"csrf": csrf})
             response.set_cookie(
-                cookie_name, token, httponly=True, samesite="strict", max_age=28800, path="/"
+                cookie_name, token, httponly=True, samesite="strict", max_age=28800, path="/",
+                secure=request.headers.get("origin", "").startswith("https://"),
             )
             return response
 

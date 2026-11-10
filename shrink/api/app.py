@@ -1,4 +1,6 @@
 from pathlib import Path
+import json
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,8 +17,19 @@ def create_app(
     *,
     allowed_hosts: frozenset[str] = frozenset({"127.0.0.1:6186", "localhost:6186"}),
 ):
+    origins = {"http://" + host for host in allowed_hosts}
+    config = application.state.root / "dashboard.json"
+    if config.exists():
+        public_origin = json.loads(config.read_text(encoding="utf-8-sig")).get("public_origin", "")
+        if public_origin:
+            parsed = urlsplit(public_origin)
+            if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+                    or parsed.path not in ("", "/") or parsed.query or parsed.fragment):
+                raise ValueError("dashboard public_origin 必须为 HTTPS 站点地址")
+            allowed_hosts = allowed_hosts | {parsed.netloc}
+            origins.add("https://" + parsed.netloc)
     app = FastAPI(title="石英", docs_url=None, redoc_url=None, openapi_url=None)
-    install_auth(app, application.state, application.sessions, allowed_hosts)
+    install_auth(app, application.state, application.sessions, allowed_hosts, origins)
     app.include_router(
         system.router_for(
             application.state, application.status, application.learning, providers,
