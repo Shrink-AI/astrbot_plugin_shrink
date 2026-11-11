@@ -2,14 +2,16 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { commandResult, deviceCommand, requestId } from '../api/commands';
 import { PageHead } from '../shared/components';
+import { DeviceAccess, type Administrator } from './DeviceAccess';
 
-type Device = { id: string; name: string; online: boolean; revoked: number };
+type Device = { id: string; name: string; online: boolean; revoked: number; access?: 'owner' | 'delegated' };
 type Session = { id: string; agent: string; cwd: string; state: string; mode: string; native_id: string; capabilities?: string[] };
 type Watch = { id: string; session: string; active: number; checked: number };
 const names: Record<string, string> = { running: '执行中', completed: '已完成', failed: '失败', unknown: '待核对', unverified: '未核实', interrupted: '已中断', waiting_confirmation: '等待确认', starting: '启动中' };
 
 export function DevicesPage() {
-  const [origins, setOrigins] = useState<Array<{session: string; label: string}>>([]);
+  const [origins, setOrigins] = useState<Array<{session: string; label: string; account?: string}>>([]);
+  const [administrators, setAdministrators] = useState<Administrator[]>([]);
   const [origin, setOrigin] = useState('');
   const [originReason, setOriginReason] = useState('正在读取管理员会话…');
   const [devices, setDevices] = useState<Device[]>([]);
@@ -29,15 +31,16 @@ export function DevicesPage() {
   const [error, setError] = useState('');
   const generation = useRef(0);
   const active = sessions.find(s => s.id === selected);
-  const online = devices.find(d => d.id === device)?.online;
+  const currentDevice = devices.find(d => d.id === device);
+  const online = currentDevice?.online;
   const supports = (cap: string) => !!online && !!active?.capabilities?.includes(cap);
   const reset = () => { generation.current++; setSessions([]); setSelected(''); setTimeline([]); setWatches([]); setPending(null); setOutput(null); setError(''); setBusy(false); setLoadingDevices(false); };
   const chooseOrigin = (value: string) => { reset(); setDevice(''); setDevices([]); setOrigin(value); };
   const chooseDevice = (value: string) => { reset(); setDevice(value); };
   useEffect(() => {
     let live = true;
-    api<{items: Array<{session: string; label: string}>; reason: string}>('/operations/admin-sessions')
-      .then(r => { if (!live) return; setOrigins(r.items); setOriginReason(r.reason || '请选择接收结果的管理员私聊'); if (r.items.length === 1) setOrigin(r.items[0].session); })
+    api<{items: Array<{session: string; label: string; account?: string}>; administrators?: Administrator[]; reason: string}>('/operations/admin-sessions')
+      .then(r => { if (!live) return; setOrigins(r.items); setAdministrators(r.administrators || []); setOriginReason(r.reason || '请选择接收结果的管理员私聊'); if (r.items.length === 1) setOrigin(r.items[0].session); })
       .catch(e => { if (live) setOriginReason(e.message); });
     return () => { live = false; generation.current++; };
   }, []);
@@ -95,17 +98,19 @@ export function DevicesPage() {
     <PageHead title="电脑与 Agent" />
     {error && <div role="alert" className="banner error">{error}</div>}
     <section className="panel stack"><h3>设备与回传会话</h3>
-      <div className="form-grid"><label className="field"><span>结果发送到</span><select value={origin} onChange={e => chooseOrigin(e.target.value)}>
+      <div className="form-grid"><label className="field"><span>当前管理员与回传会话</span><select value={origin} onChange={e => chooseOrigin(e.target.value)}>
         <option value="">{originReason}</option>{origins.map(o => <option key={o.session} value={o.session}>{o.label}</option>)}
         {origin && !origins.some(o => o.session === origin) && <option value={origin}>{origin}</option>}</select></label>
         <label className="field"><span>电脑</span><select disabled={!origin || loadingDevices} value={device} onChange={e => chooseDevice(e.target.value)}>
-          <option value="">{loadingDevices ? '正在加载…' : devices.length ? '选择电脑' : origin ? '暂无已配对设备' : '先选择回传会话'}</option>
-          {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.online ? '在线' : '离线'}</option>)}</select></label></div>
+          <option value="">{loadingDevices ? '正在加载…' : devices.length ? '选择电脑' : origin ? '当前管理员没有可见设备' : '先选择回传会话'}</option>
+          {devices.map(d => <option key={d.id} value={d.id}>{d.name} · {d.online ? '在线' : '离线'}{d.access === 'owner' ? ' · 自己的设备' : d.access === 'delegated' ? ' · 获授权' : ''}</option>)}</select></label></div>
       <div className="row"><button disabled={!origin || busy || loadingDevices} onClick={() => void loadDevices()}>刷新设备</button><button disabled={!origin || busy} onClick={() => void run('pair')}>生成配对码</button>
-        <button disabled={!device || busy} onClick={() => { if (confirm('撤销后需要重新配对，继续？')) void run('revoke'); }}>撤销设备</button></div>
+        <button disabled={currentDevice?.access !== 'owner' || busy} onClick={() => { if (confirm('撤销后需要重新配对，继续？')) void run('revoke'); }}>撤销设备</button></div>
       {device && !online && <p role="status">电脑离线，请启动电脑上的石英托盘程序。</p>}
       <details><summary>高级：手动指定管理员私聊</summary><label className="field"><span>会话标识</span><input value={origin} onChange={e => chooseOrigin(e.target.value)} placeholder="平台:FriendMessage:管理员 ID" /></label></details>
     </section>
+    <DeviceAccess origin={origin} device={currentDevice} administrators={administrators}
+      account={origins.find(o => o.session === origin)?.account || origin.split(':').at(-1) || ''} />
     <section className="panel stack"><h3>Agent 会话</h3><div className="form-grid"><label className="field"><span>Agent</span><select value={agent} onChange={e => setAgent(e.target.value)}><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="dsh">DSH</option></select></label>
       <label className="field"><span>已有任务关键词</span><input value={query} onChange={e => setQuery(e.target.value)} /></label></div>
       <div className="row"><button disabled={!online || busy} onClick={() => void run('discover', {agent, query})}>发现已有会话</button><button disabled={!device || busy} onClick={() => void run('sessions')}>刷新会话</button></div>

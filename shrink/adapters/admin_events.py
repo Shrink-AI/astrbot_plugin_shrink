@@ -8,8 +8,12 @@ def admin_candidates(context):
         for account in admins:
             if account:
                 items.append({"session": f"{meta.id}:FriendMessage:{account}",
+                              "account": account,
                               "label": f"{meta.id} · 管理员 {account}"})
-    return {"items": items, "reason": "" if items else "没有已连接平台或未配置管理员"}
+    return {"items": items,
+            "administrators": [{"id": account, "label": f"管理员 {account}"}
+                               for account in dict.fromkeys(admins) if account],
+            "reason": "" if items else "没有已连接平台或未配置管理员"}
 
 
 def admin_event(context, session):
