@@ -212,7 +212,8 @@ async def test_fallback_claim_is_replaced_before_output(app, host_modules, text)
     adapter.record_episode = Mock()
     response = SimpleNamespace(tools_call_name=[], role='assistant', completion_text=text, result_chain=None)
     await adapter.response(Event(), response)
-    assert response.completion_text == '这轮没有拿到执行记录，还不能说已经做了。'
+    assert response.completion_text == '我看看这次同步的记录。'
+    app.outbound.compose.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -29,6 +29,7 @@ from ..services.perception import SELF, Turn, address
 from ..services.reply_text import drop_meta_sentences, humanize, strip_reasoning
 from ..services.skills import tool_step
 from ..services.debounce import Debouncer
+from ..services.task_reporting import execution_report
 from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup
 from .notifications import Notifications
 
@@ -425,7 +426,7 @@ class ConversationAdapter:
         if task_id:
             try:
                 task = app.operations.owned_task(event, task_id)
-                execution = {"status": task["status"], "delegated_to_subagent": True,
+                execution = {**execution_report(task), "delegated_to_subagent": True,
                              "request": task["request"], "reports_back": not bool(task["parent"])}
             except ValueError:
                 pass
@@ -442,10 +443,18 @@ class ConversationAdapter:
             context=event.get_extra("shrink_expression_context"),
             execution=execution,
         )
-        if unsupported_claim(response.completion_text, event.get_extra("shrink_tools"), execution) or (
-                unsupported_claim(finished.text, event.get_extra("shrink_tools"), execution)):
+        if unsupported_claim(response.completion_text, steps, execution) or (
+                unsupported_claim(finished.text, steps, execution)):
             # Do not feed an unsupported completion claim to another model as a fact.
-            finished.text = prompt_text("reply.unverified_execution")
+            facts = execution or {"status": "unverified", "tool_steps": steps, "completion_confirmed": False}
+            text = await app.outbound.compose(
+                facts, request=turn.text, kind="execution_status",
+                instruction="只说明目前可确认的状态与缺少的回执；自然、简短、温和，不责备用户。"
+                            "没有记录不能推断未执行，也不能声称完成，不承诺自动重试。",
+                scope={"session": event.unified_msg_origin, "sender": str(event.get_sender_id())},
+            )
+            text = strip_reasoning(text or "").strip()
+            finished.text = "" if unsupported_claim(text, steps, execution) else text
             finished.second = ""
             finished.meme_id = None
         if finished.meme_id:

@@ -12,15 +12,17 @@ from .deployment import Deployments
 from .agent_tasks import AgentTasks, AwaitingUserInput
 from .workbench_runtime import AstrBotWorkbenchRuntime
 from .admin_events import admin_event, admin_candidates
+from .notifications import Notifications
+from .task_results import deliver_task_result
 from ..services.task_context import CURRENT_TASK
 from ..prompts import text as prompt_text
-
 
 
 class Operations(AgentTasks):
     def __init__(self, context, application, plugin_root):
         self.context, self.app = context, application
         self.database = application.database
+        self.notifications = Notifications(application)
         self.workbench = Workbench(application.state.root / "workbench",
                                    Path(plugin_root).parent, self.test_plugin, AstrBotWorkbenchRuntime(),
                                    lambda: prompt_text('tasks.workbench_guide'))
@@ -175,11 +177,12 @@ class Operations(AgentTasks):
             result = json.dumps({"status": status, "question": question["question"],
                                  "context": question["context"]}, ensure_ascii=False)
         except asyncio.CancelledError:
-            status, result = "cancelled", "开发任务已取消，保留草稿和已有执行记录。"
+            status, result = "cancelled", json.dumps({"status": "cancelled", "records_preserved": True})
         except TimeoutError:
-            status, result = "timed_out", "开发任务的一次请求超时，草稿和执行记录已保留，请核对后续做。"
+            status, result = "timed_out", json.dumps({"status": "timed_out", "records_preserved": True,
+                                                       "completion_confirmed": False})
         except Exception as exc:
-            result = f"{type(exc).__name__}: {str(exc)[:2000]}"
+            result = json.dumps({"error_type": type(exc).__name__, "error": str(exc)[:2000]}, ensure_ascii=False)
         finally:
             with self.database.transaction() as con:
                 con.execute("UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?",
@@ -188,16 +191,7 @@ class Operations(AgentTasks):
             self.question_signals.pop(task_id, None)
         if status not in {"cancelled", "awaiting_deployment"}:
             try:
-                from astrbot.api.message_components import Plain
-                from astrbot.core.message.message_event_result import MessageChain
-                scope = {"session": event.unified_msg_origin, "sender": str(event.get_sender_id())}
-                reply = await self.app.outbound.compose(result, request=request, kind="development",
-                                                       instruction="实际状态：" + status, scope=scope)
-                accepted = await asyncio.wait_for(
-                    self.context.send_message(event.unified_msg_origin, MessageChain([Plain(reply)])), 30)
-                if not accepted:
-                    raise RuntimeError("开发结果发送未找到匹配平台；结果保留在后台任务详情")
-                self.app.outbound.record(scope, reply, "development:" + task_id)
+                await deliver_task_result(self, task_id, event)
             except Exception as exc:
                 self.app.tasks.error("developer_result_delivery", exc)
 

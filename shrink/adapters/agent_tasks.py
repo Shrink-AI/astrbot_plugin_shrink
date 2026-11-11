@@ -16,6 +16,13 @@ class AwaitingUserInput(Exception):
     pass
 
 
+class DependencyBlocked(Exception):
+    def __init__(self, dep, status):
+        super().__init__(f"前置任务{dep}状态{status}，当前下游任务未执行")
+        self.dep = dep
+        self.status = status
+
+
 class AgentTasks:
     """Mixin for Operations, sharing its task store and lifecycle."""
 
@@ -261,7 +268,7 @@ class AgentTasks:
                     + '\n' + prompt_text('tasks.agent_resources')
                     + '\n' + prompt_text('skills.authoring'), tools=tools,
                 contexts=handoff.agent.begin_dialogs or [], max_steps=128,
-                tool_call_timeout=180, agent_hooks=AuditHooks(), stream=False)
+                tool_call_timeout=180, agent_hooks=AuditHooks(), stream=True)
         from ..services.task_context import CURRENT_TASK
         task_id = CURRENT_TASK.get()
         signal = self.question_signals.setdefault(task_id, asyncio.Event())
@@ -296,7 +303,7 @@ class AgentTasks:
                     await asyncio.shield(running)
                 previous = self.detail(dep)
                 if previous['status'] != 'completed':
-                    raise ValueError(f"前置任务{dep}状态{previous['status']}，请检查具体结果")
+                    raise DependencyBlocked(dep, previous['status'])
                 inputs.append({'task_id': dep, 'result': previous['result']})
             async with self.agent_slots:
                 with self.database.transaction() as con:
@@ -351,6 +358,8 @@ class AgentTasks:
             result = json.dumps({'status': status, 'question': question['question'],
                                  'context': question['context'], 'options': json.loads(question['options'])},
                                 ensure_ascii=False)
+        except DependencyBlocked as exc:
+            status, result = 'blocked', str(exc)
         except asyncio.CancelledError:
             status, result = 'cancelled', '任务已取消，已完成步骤保留在执行记录。'
         except TimeoutError:
@@ -358,7 +367,7 @@ class AgentTasks:
         except Exception as exc:
             status, result = 'needs_attention', f'{type(exc).__name__}: {str(exc)[:2000]}'
         finally:
-            if status in {'cancelled', 'timed_out'}:
+            if status in {'cancelled', 'timed_out', 'blocked'}:
                 children = self.database.rows('SELECT id FROM operation_tasks WHERE parent=?', (task_id,))
                 for child in children:
                     running = self.running.get(child['id'])
@@ -369,12 +378,18 @@ class AgentTasks:
             with self.database.transaction() as con:
                 con.execute('UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?',
                             (status, result, time.time(), task_id))
-                if status != 'cancelled' and not row['parent']:
+                if status not in {'cancelled', 'blocked'} and not row['parent']:
                     con.execute("UPDATE operation_tasks SET delivery='pending' WHERE id=?", (task_id,))
+                elif status == 'blocked' and not row['parent']:
+                    con.execute("UPDATE operation_tasks SET delivery='suppressed' WHERE id=?", (task_id,))
             CURRENT_TASK.reset(token)
             self.question_signals.pop(task_id, None)
-        if status != 'cancelled' and not row['parent']:
-            await self.deliver_agent_result(task_id, event)
+        if status not in {'cancelled', 'blocked'} and not row['parent']:
+            from .task_results import deliver_task_result
+            if getattr(self.deliver_agent_result, '__func__', None) is AgentTasks.deliver_agent_result:
+                await deliver_task_result(self, task_id, event)
+            else:
+                await self.deliver_agent_result(task_id, event)
 
     async def deliver_agent_result(self, task_id, event):
         row = self.detail(task_id)

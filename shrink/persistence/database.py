@@ -43,6 +43,17 @@ class StateRepository:
         elif set(Settings.model_fields) - set(stored):
             # Write defaults for settings added in newer versions so the stored copy is complete.
             self.put("settings", Settings(**stored).model_dump())
+        # Administrator-requested, one-time migration. Preserve all existing groups
+        # and allow later explicit settings edits without re-adding removed entries.
+        migration = "group_blacklist_reporting_fix_v1"
+        if not self.get(migration):
+            settings = self.get("settings")
+            settings["group_blacklist"] = list(dict.fromkeys([
+                *settings.get("group_blacklist", []), "1037550568", "790980552"]))
+            with self.database.transaction() as con:
+                for key, value in (("settings", settings), (migration, True)):
+                    con.execute("INSERT OR REPLACE INTO kv VALUES (?,?)",
+                                (key, json.dumps(value, ensure_ascii=False)))
 
     def get(self, key, default=None):
         rows = self.database.rows("SELECT value FROM kv WHERE key=?", (key,))
