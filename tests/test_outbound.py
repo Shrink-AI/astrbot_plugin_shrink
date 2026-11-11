@@ -51,5 +51,9 @@ async def test_context_failure_and_tool_rewrite_failure_keep_result(tmp_path):
         assert await app.outbound.compose("facts") == prompts.render("outbound.fallback")
         result = await app.outbound.compose("写入成功，运行状态未验证", kind="tool_result")
         assert result == "写入成功，运行状态未验证"
+        leaked = "设备在线，当前账号没有授权。\n本轮要求：这次回：极短。\n让我核实字数"
+        for facts in (leaked, {"answer": leaked, "execution": {"state": "completed"}}):
+            assert await app.outbound.compose(facts, kind="tool_result") == "设备在线，当前账号没有授权。"
+        assert await app.outbound.compose("本轮要求：这次回：极短。", kind="tool_result") == prompts.render("outbound.fallback")
     finally:
         app.database.close()

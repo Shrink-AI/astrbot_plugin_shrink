@@ -32,6 +32,25 @@ ANY_MARKER = re.compile(r"\[\[[^\]]*]]")
 SENTENCE = re.compile(r"[^。！？!?\n]+[。！？!?…~]*")
 
 
+PROMPT_LEAK = re.compile(
+    r"(?:本轮要求[：:]|这次回[：:]|让我核实字数|数一下字数|非常贴合石英的语气|看提示[：:])")
+
+
+def strip_prompt_deliberation(text):
+    # Inspect prose only: examples inside code fences are user-visible content.
+    parts = re.split(r"(```.*?```)", text or "", flags=re.S)
+    for index, part in enumerate(parts):
+        if part.startswith("```"):
+            continue
+        matches = list(PROMPT_LEAK.finditer(part))
+        if len({match.group() for match in matches}) < 2:
+            continue
+        prefix = part[:matches[0].start()]
+        prefix = re.sub(r"(?:^|\n)\s*等等[！!：:]*\s*$", "", prefix)
+        return ("".join(parts[:index]) + prefix).strip()
+    return text or ""
+
+
 def has_cjk(text):
     return bool(re.search(r"[一-鿿]", text or ""))
 
@@ -40,6 +59,7 @@ def strip_reasoning(text):
     """Remove reasoning the model wrote into the visible answer."""
     if not text:
         return ""
+    text = strip_prompt_deliberation(text)
     text = THINK_BLOCK.sub("", text)
     if THINK_CLOSE.search(text):
         text = THINK_CLOSE.sub("", text)

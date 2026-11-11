@@ -39,7 +39,7 @@ def wants_detail(text):
 
 
 def choose_form(text, random_value, meme_available=False, meme_roll=1.0):
-    if wants_detail(text):
+    if wants_detail(text) or re.search(r"测试过|查到了|查一下|查下|报错|权限|离线|授权|重载|部署|进度|同步|安装|配置|提交|推送", text or ""):
         return "detail"
     if meme_available and meme_roll < 0.12:
         return "meme"
@@ -115,9 +115,9 @@ class ExpressionService:
                 facts = {"answer": text, "execution": execution} if execution else text
                 text = await self.outbound.compose(facts, request=user_text, kind="tool_result",
                                                    context=context, recent=recent)
-            return Finished(text.strip(), meme_id=meme_id)
+            return Finished(strip_reasoning(text).strip(), meme_id=meme_id)
         if form == "detail":
-            return Finished(text.strip(), meme_id=meme_id)
+            return Finished(strip_reasoning(text).strip(), meme_id=meme_id)
         flat = re.sub(r"\s+", " ", text).strip()
         limit = FORM_LIMIT.get(form, HARD_LIMIT)
         if flat and (len(flat) > max(limit * 2, HARD_LIMIT) or repeats_recent(flat, recent)):

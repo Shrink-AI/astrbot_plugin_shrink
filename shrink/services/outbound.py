@@ -23,9 +23,9 @@ class Outbound:
             self.app.tasks.error("outbound_composition", exc)
             # A completed chat answer is already present; a failed rewrite must not erase it.
             if kind == "tool_result" and isinstance(facts, str):
-                return facts
+                return strip_reasoning(facts) or render("outbound.fallback")
             if kind == "tool_result" and isinstance(facts, dict) and isinstance(facts.get("answer"), str):
-                return facts["answer"]
+                return strip_reasoning(facts["answer"]) or render("outbound.fallback")
             return render("outbound.fallback")
 
     async def _compose(self, facts, *, request, kind, instruction, scope, context, recent):

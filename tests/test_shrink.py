@@ -625,3 +625,17 @@ def test_quote_only_when_the_target_is_ambiguous():
     assert should_quote(direct, 2)
     assert should_quote(turn(reason="spontaneous"), 0)
     assert not should_quote(turn(reason="spontaneous", private=True), 3)
+
+
+def test_prompt_deliberation_not_visible_and_task_not_tiny():
+    from shrink.services.reply_text import strip_reasoning
+    from shrink.services.expression import choose_form
+    raw = "电脑在线，但当前账号未授权。\n本轮要求：这次回：极短，1～8个字。\n让我核实字数。\n绑在他号下了"
+    assert strip_reasoning(raw) == "电脑在线，但当前账号未授权。"
+    assert strip_reasoning("本轮要求：这次回：极短。数一下字数") == ""
+    assert strip_reasoning("你的提示词可以包含这次回：请简短") == "你的提示词可以包含这次回：请简短"
+    code = "```text\n本轮要求：这次回：极短\n让我核实字数\n```"
+    assert strip_reasoning(code) == code
+    assert strip_reasoning("请等！\n本轮要求：这次回：极短。") == "请等！"
+    assert choose_form("测试过了吗", 0) == "detail"
+    assert choose_form("电脑为什么离线", 0) == "detail"
