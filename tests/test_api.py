@@ -1,6 +1,6 @@
 """New management endpoints: people, nicknames, memories, runs, review, teach, meme batch."""
 
-from conftest import seed_known
+from .conftest import seed_known
 import io
 import json
 import time

@@ -36,6 +36,13 @@ class WorkbenchStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('main.py', files)
         return dict(self.result)
 
+    async def test_large_frontend_asset_and_single_file_limit(self):
+        content = "/* built asset */" + "x" * (330 * 1024)
+        await self.call("write", "static/app.js", content)
+        self.assertEqual(await self.workbench.perform("read", self.name, "static/app.js", "", self.manager), content)
+        with self.assertRaisesRegex(ValueError, "4MiB"):
+            await self.call("write", "static/app.js", "界" * (4 * 1024 * 1024 // 3 + 1))
+
     async def call(self, action, path='', content=''):
         return json.loads(await self.workbench.perform(action, self.name, path, content, self.manager))
 

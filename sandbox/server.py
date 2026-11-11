@@ -26,6 +26,7 @@ FILE_BYTES = 5 * 1024 * 1024
 OUTPUT_LIMIT = 6000
 CODE_LIMIT = 8000
 PLUGIN_LIMIT = 8 * 1024 * 1024
+PLUGIN_SINGLE_FILE_LIMIT = 4 * 1024 * 1024
 PLUGIN_FILE_LIMIT = 512
 SLOTS = threading.BoundedSemaphore(2)
 
@@ -145,8 +146,10 @@ def test_plugin(files):
             path = Path(name)
             if path.is_absolute() or ".." in path.parts or "\\" in name:
                 raise ValueError("invalid path")
-            if not isinstance(content, str) or len(content.encode()) > 256 * 1024:
-                raise ValueError("invalid content")
+            if not isinstance(content, str):
+                raise ValueError(f"file {name}: content must be text")
+            if len(content.encode("utf-8")) > PLUGIN_SINGLE_FILE_LIMIT:
+                raise ValueError(f"file {name}: exceeds 4MiB single-file limit")
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content, encoding="utf-8")

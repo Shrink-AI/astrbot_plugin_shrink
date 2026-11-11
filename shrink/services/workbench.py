@@ -10,6 +10,7 @@ from pathlib import Path
 
 
 PREFIX = 'astrbot_plugin_shirnk_ext_'
+FILE_LIMIT = 4 * 1024 * 1024
 
 
 class Workbench:
@@ -226,7 +227,7 @@ class Workbench:
                 return '\n'.join(changes)[:30000] or '没有代码差异'
             if action == 'write':
                 if target.is_dir() and not baseline_file.is_file(): raise ValueError('修改现有插件前先checkout')
-                if len(content.encode()) > 256 * 1024: raise ValueError('单文件上限256KB')
+                if len(content.encode('utf-8')) > FILE_LIMIT: raise ValueError('单文件上限4MiB')
                 file = self.file(draft, path)
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content, encoding='utf-8')

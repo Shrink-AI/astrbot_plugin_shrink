@@ -8,7 +8,7 @@ import pytest
 from shrink.application import Application
 from shrink.adapters.native_skills import NativeSkills
 from shrink.services.maintenance import CapabilityMaintenance, RECOVERY
-from test_native_skills import FakeNative
+from .test_native_skills import FakeNative
 
 
 class Native(FakeNative):

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from conftest import seed_known
+from .conftest import seed_known
 from shrink.application import Application
 from shrink.services.memory import Query
 from shrink.services.perception import Turn, address

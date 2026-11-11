@@ -144,6 +144,11 @@ def test_plugin_capacity_keeps_explicit_upper_bound():
         sandbox.test_plugin(files)
 
 
+def test_plugin_rejects_oversize_file_with_filename():
+    with pytest.raises(ValueError, match="static/app.js: exceeds 4MiB"):
+        sandbox.test_plugin({"test_smoke.py": "", "static/app.js": "x" * (4 * 1024 * 1024 + 1)})
+
+
 def test_sandbox_stops_runaway_code(monkeypatch):
     monkeypatch.setattr(sandbox, "WALL_SECONDS", 1)
     result = sandbox.run("while True:\n    pass")

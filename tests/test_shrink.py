@@ -14,7 +14,7 @@ from shrink.services.memes import inspect_image
 from shrink.services.expression import wants_detail
 from shrink.services.perception import Turn
 from shrink.growth import style_decision
-from conftest import seed_known
+from .conftest import seed_known
 from shrink.application import Application
 from shrink.api.app import create_app
 
@@ -175,7 +175,7 @@ def test_turn_prompt_shows_task_reply_style():
     prompt = turn_prompt(speaker="测试成员", form="detail")
     assert "办事回复示例" in prompt
     assert "内部ID、路径和日志默认留在后台" in fixed_persona()
-    assert "清单不漏项" in fixed_persona()
+    assert "用户要清单：逐项列全任务和实际状态" in prompt
 
 
 def test_participation_limit(store):
