@@ -229,6 +229,8 @@ python -m venv .venv
 cd web && npm ci && npm run build   # 后台前端，产物输出到 static/
 ```
 
+后台前端是 Vite + React 19 + TypeScript，界面用 Tailwind CSS v4 和 shadcn/ui，外壳布局沿用 [shadcn-admin](https://github.com/satnaing/shadcn-admin) 的侧边栏 + 顶栏结构。`web/README.md` 记了组件约定（语义色、`cn()`、别名 `@/`、测试钩子），加组件用 `npx shadcn@latest add <名称>`。
+
 Windows 上把 `.venv/bin/` 换成 `.venv\Scripts\`。
 
 `tools/` 里的辅助脚本：

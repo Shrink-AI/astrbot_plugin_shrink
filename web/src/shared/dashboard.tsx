@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { Configuration, Status } from '../api/types';
+import type { Configuration, Status } from '@/api/types';
 
 export interface DashboardState extends Configuration {
   status: Status;

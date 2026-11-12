@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api/client';
-import type { Digest, Run } from '../api/types';
-import { Badge, Empty, PageHead, Pagination } from '../shared/components';
-import { useDashboard } from '../shared/dashboard';
-import { date, place, runKinds, runLabels } from '../shared/format';
-import { RunDetail } from '../shared/RunDetail';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { api } from '@/api/client';
+import { FacetedFilter } from '@/components/data-table/faceted-filter';
+import type { Digest, Run } from '@/api/types';
+import { Badge, PageHead, Pagination, TableShell, TableToolbar } from '@/shared/components';
+import { useDashboard } from '@/shared/dashboard';
+import { date, place, runKinds, runLabels } from '@/shared/format';
+import { RunDetail } from '@/shared/RunDetail';
 
 function summary(r: Run) {
   const s = r.stats ?? {};
@@ -30,38 +33,74 @@ export function RunsPage() {
     load.catch(e => { if(!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [tab, kind, offset, revision]);
-  const tone = (s: string) => s === 'success' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' ? 'info' : undefined;
+  const tone = (s: string): 'ok' | 'bad' | 'info' | undefined => s === 'success' ? 'ok' : s === 'failed' ? 'bad' : s === 'running' ? 'info' : undefined;
+  const changeTab = (value: string) => {
+    if(value !== 'runs' && value !== 'digests') return;
+    setTab(value); setOffset(0);
+  };
+  const size = 30;
   return <>
-    <PageHead title="整理记录">
-      <div className="segmented">
-        <button className={tab === 'runs' ? 'on' : ''} onClick={() => { setTab('runs'); setOffset(0); }}>记录</button>
-        <button className={tab === 'digests' ? 'on' : ''} onClick={() => { setTab('digests'); setOffset(0); }}>聊天摘要</button>
-      </div>
+    <PageHead title="整理记录" description="每一轮整理、学习和摘要的结果，可以逐条回看和撤销。">
+      <ToggleGroup type="single" variant="outline" size="sm" value={tab} onValueChange={changeTab}>
+        <ToggleGroupItem value="runs" role="button" aria-pressed={tab === 'runs'}>记录</ToggleGroupItem>
+        <ToggleGroupItem value="digests" role="button" aria-pressed={tab === 'digests'}>聊天摘要</ToggleGroupItem>
+      </ToggleGroup>
     </PageHead>
-    {tab === 'runs' ? <>
-      <div className="toolbar"><select aria-label="类型" value={kind} onChange={e => { setKind(e.target.value); setOffset(0); }}>
-        <option value="">全部类型</option>{Object.entries(runKinds).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-      </select></div>
-      <section className="panel" style={{ padding: 0 }}>
-        {!runs.length ? <Empty text="还没有记录。" /> : <div className="table-wrap"><table className="table">
-          <thead><tr><th>#</th><th>类型</th><th>来源</th><th>状态</th><th>结果</th><th>开始时间</th></tr></thead>
-          <tbody>{runs.map(r => <tr key={r.id} className="clickable" onClick={() => void action(async () => setOpen(await api<Run>(`/runs/${r.id}`)), '')}>
-            <td>{r.id}</td><td>{runKinds[r.kind] ?? r.kind}</td><td>{place(r.source)}</td>
-            <td><Badge tone={tone(r.status)}>{r.undone ? '已撤销' : runLabels[r.status] ?? r.status}</Badge></td>
-            <td className="text">{summary(r)}</td><td className="num">{date(r.started)}</td></tr>)}</tbody>
-        </table></div>}
-      </section>
-      <Pagination offset={offset} count={runs.length} size={30} change={setOffset} />
-    </> : <>
-      <section className="panel" style={{ padding: 0 }}>
-        {!digests.length ? <Empty text="还没有聊天摘要。" /> : <div className="table-wrap"><table className="table">
-          <thead><tr><th>群</th><th>时间段</th><th>消息</th><th>摘要</th></tr></thead>
-          <tbody>{digests.map(d => <tr key={d.id}><td>{place(d.source)}</td><td className="num">{date(d.start)}<br />{date(d.end)}</td>
-            <td className="num">{d.count}</td><td className="text">{d.summary}</td></tr>)}</tbody>
-        </table></div>}
-      </section>
-      <Pagination offset={offset} count={digests.length} size={30} change={setOffset} />
-    </>}
+    <div className="flex flex-1 flex-col gap-4">
+      {tab === 'runs' ? <>
+        <TableToolbar>
+          <div className="flex flex-1 flex-wrap items-center gap-2">
+            <FacetedFilter title="类型" value={kind}
+              options={Object.entries(runKinds).map(([value, label]) => ({ label, value }))}
+              onChange={next => { setKind(next); setOffset(0); }} />
+          </div>
+        </TableToolbar>
+        <TableShell>
+          <Table className="min-w-[720px]">
+            <TableHeader><TableRow>
+              <TableHead className="w-[64px]">#</TableHead>
+              <TableHead className="w-[104px]">类型</TableHead>
+              <TableHead className="w-[150px]">来源</TableHead>
+              <TableHead className="w-[96px]">状态</TableHead>
+              <TableHead>结果</TableHead>
+              <TableHead className="w-[150px] text-right">开始时间</TableHead>
+            </TableRow></TableHeader>
+            <TableBody>{!runs.length ? <TableRow>
+              <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">还没有记录。</TableCell>
+            </TableRow> : runs.map(r => <TableRow key={r.id} className="clickable cursor-pointer"
+              onClick={() => void action(async () => setOpen(await api<Run>(`/runs/${r.id}`)), '')}>
+              <TableCell className="tabular-nums text-muted-foreground">{r.id}</TableCell>
+              <TableCell>{runKinds[r.kind] ?? r.kind}</TableCell>
+              <TableCell className="text-muted-foreground">{place(r.source)}</TableCell>
+              <TableCell><Badge tone={tone(r.status)}>{r.undone ? '已撤销' : runLabels[r.status] ?? r.status}</Badge></TableCell>
+              <TableCell className="whitespace-normal">{summary(r)}</TableCell>
+              <TableCell className="text-right tabular-nums">{date(r.started)}</TableCell>
+            </TableRow>)}</TableBody>
+          </Table>
+        </TableShell>
+        <Pagination offset={offset} count={runs.length} size={size} change={setOffset} />
+      </> : <>
+        <TableShell>
+          <Table className="min-w-[720px]">
+            <TableHeader><TableRow>
+              <TableHead className="w-[150px]">群</TableHead>
+              <TableHead className="w-[150px] text-right">时间段</TableHead>
+              <TableHead className="w-[80px] text-right">消息</TableHead>
+              <TableHead>摘要</TableHead>
+            </TableRow></TableHeader>
+            <TableBody>{!digests.length ? <TableRow>
+              <TableCell colSpan={4} className="h-24 text-center text-muted-foreground">还没有聊天摘要。</TableCell>
+            </TableRow> : digests.map(d => <TableRow key={d.id}>
+              <TableCell className="text-muted-foreground">{place(d.source)}</TableCell>
+              <TableCell className="text-right tabular-nums">{date(d.start)}<br />{date(d.end)}</TableCell>
+              <TableCell className="text-right tabular-nums">{d.count}</TableCell>
+              <TableCell className="whitespace-normal">{d.summary}</TableCell>
+            </TableRow>)}</TableBody>
+          </Table>
+        </TableShell>
+        <Pagination offset={offset} count={digests.length} size={size} change={setOffset} />
+      </>}
+    </div>
     {open && <RunDetail run={open} close={() => setOpen(null)} />}
   </>;
 }

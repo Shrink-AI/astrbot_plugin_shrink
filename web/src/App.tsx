@@ -1,41 +1,51 @@
-import { Brain, FileText, Gauge, GraduationCap, History, Image, Lightbulb, LogOut, MessagesSquare, Puzzle, RefreshCw, Settings2, UserRound, Users, Wrench, X } from 'lucide-react';
+import { Brain, FileText, Gauge, GraduationCap, History, Image, Lightbulb, MessagesSquare, Puzzle, Settings2, UserRound, Users, Wrench, XIcon } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { api, setCsrf } from './api/client';
-import type { Configuration, Status } from './api/types';
-import { LoginPage } from './pages/LoginPage';
-import { MemesPage } from './pages/MemesPage';
-import { MemoryPage } from './pages/MemoryPage';
-import { Overview } from './pages/Overview';
-import { PeoplePage } from './pages/PeoplePage';
-import { PersonaPage } from './pages/PersonaPage';
-import { PromptsPage } from './pages/PromptsPage';
-import { RunsPage } from './pages/RunsPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { SkillsPage } from './pages/SkillsPage';
-import { TeachPage } from './pages/TeachPage';
-import { OperationsPage, CapabilitiesPage } from './pages/OperationsPage';
-import { ChatsPage } from './pages/ChatsPage';
-import { DevicesPage } from './pages/DevicesPage';
-import { MaintenancePage } from './pages/MaintenancePage';
-import { DashboardContext } from './shared/dashboard';
+import { Alert, AlertAction, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { Spinner } from '@/components/ui/spinner';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { AppSidebar } from '@/components/layout/app-sidebar';
+import { Header } from '@/components/layout/header';
+import { Main } from '@/components/layout/main';
+import { SkipToMain } from '@/components/layout/skip-to-main';
+import { ConfirmProvider } from '@/components/confirm-dialog';
+import { api, setCsrf } from '@/api/client';
+import type { Configuration, Status } from '@/api/types';
+import { LoginPage } from '@/pages/LoginPage';
+import { MemesPage } from '@/pages/MemesPage';
+import { MemoryPage } from '@/pages/MemoryPage';
+import { Overview } from '@/pages/Overview';
+import { PeoplePage } from '@/pages/PeoplePage';
+import { PersonaPage } from '@/pages/PersonaPage';
+import { PromptsPage } from '@/pages/PromptsPage';
+import { RunsPage } from '@/pages/RunsPage';
+import { SettingsPage } from '@/pages/SettingsPage';
+import { SkillsPage } from '@/pages/SkillsPage';
+import { TeachPage } from '@/pages/TeachPage';
+import { OperationsPage, CapabilitiesPage } from '@/pages/OperationsPage';
+import { ChatsPage } from '@/pages/ChatsPage';
+import { DevicesPage } from '@/pages/DevicesPage';
+import { MaintenancePage } from '@/pages/MaintenancePage';
+import { DashboardContext } from '@/shared/dashboard';
 
 const sections = [
-  { name: '', pages: [
+  { title: undefined as string | undefined, pages: [
     { key: 'overview', name: '概览', icon: Gauge, view: Overview },
   ] },
-  { name: '群聊', pages: [
+  { title: '群聊', pages: [
     { key: 'chats', name: '聊天与图片', icon: MessagesSquare, view: ChatsPage },
     { key: 'people', name: '人物', icon: Users, view: PeoplePage },
     { key: 'memory', name: '记忆', icon: Brain, view: MemoryPage },
     { key: 'memes', name: '表情', icon: Image, view: MemesPage },
   ] },
-  { name: '说话方式', pages: [
+  { title: '说话方式', pages: [
     { key: 'persona', name: '人格', icon: UserRound, view: PersonaPage },
     { key: 'prompts', name: '提示词', icon: FileText, view: PromptsPage },
     { key: 'teach', name: '定向学习', icon: GraduationCap, view: TeachPage },
     { key: 'skills', name: '经验', icon: Lightbulb, view: SkillsPage },
   ] },
-  { name: '后台', pages: [
+  { title: '后台', pages: [
     { key: 'runs', name: '整理记录', icon: History, view: RunsPage },
     { key: 'maintenance', name: '夜间能力维护', icon: History, view: MaintenancePage },
     { key: 'operations', name: '开发任务', icon: Wrench, view: OperationsPage },
@@ -44,7 +54,7 @@ const sections = [
     { key: 'settings', name: '设置', icon: Settings2, view: SettingsPage },
   ] },
 ];
-const pages = sections.flatMap(s => s.pages);
+const pages = sections.flatMap(section => section.pages);
 
 export function App() {
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
@@ -91,32 +101,47 @@ export function App() {
     return () => clearInterval(timer);
   }, [authenticated, running]);
   const go = (key: string) => { setPage(key); setError(''); setNotice(''); };
-  if(authenticated === false) return <LoginPage onLogin={() => setAuthenticated(true)} />;
-  if(!status || !config) return <div className="loading">{error || '加载中…'}{error && <button onClick={refresh}>重试</button>}</div>;
-  const current = pages.find(p => p.key === page) ?? pages[0];
-  const View = current.view;
-  const logout = () => void action(async () => { await api('/logout', 'POST'); signOut(); }, '');
-  return <DashboardContext.Provider value={{ ...config, status, busy, revision, refresh, action, setError, signOut, go }}>
-    <div className="shell">
-      <aside className="sidebar">
-        <div className="brand">石英后台</div>
-        <nav className="nav">{sections.map(s => <div key={s.name || 'top'} className="nav" role="group" aria-label={s.name || undefined}>
-          {s.name && <div className="nav-group">{s.name}</div>}
-          {s.pages.map(p => <button key={p.key} className={p.key === current.key ? 'active' : ''} onClick={() => go(p.key)}>
-            <p.icon size={16} />{p.name}
-            {p.key === 'teach' && status.counts.review_open > 0 && <span className="count">{status.counts.review_open}</span>}
-          </button>)}
-        </div>)}</nav>
-        <div className="sidebar-foot">
-          <button className="ghost" disabled={busy} onClick={refresh}><RefreshCw size={15} />刷新</button>
-          <button className="ghost" onClick={logout}><LogOut size={15} />退出</button>
-        </div>
-      </aside>
-      <main className="content">
-        {error && <div role="alert" className="banner error">{error}<button onClick={() => setError('')} aria-label="关闭"><X size={14} /></button></div>}
-        {notice && <div role="status" className="banner success">{notice}<button onClick={() => setNotice('')} aria-label="关闭"><X size={14} /></button></div>}
-        <View key={current.key} />
-      </main>
+  if(authenticated === false) return <ConfirmProvider><LoginPage onLogin={() => setAuthenticated(true)} /></ConfirmProvider>;
+  if(!status || !config) return <div className="grid min-h-svh place-items-center px-4 text-sm text-muted-foreground">
+    <div className="flex items-center gap-3">
+      {!error && <Spinner />}
+      {error || '加载中…'}
+      {error && <Button variant="outline" size="sm" onClick={refresh}>重试</Button>}
     </div>
-  </DashboardContext.Provider>;
+  </div>;
+  const current = pages.find(item => item.key === page) ?? pages[0];
+  const View = current.view;
+  const groups = sections.map(section => ({
+    title: section.title,
+    items: section.pages.map(item => ({
+      key: item.key,
+      title: item.name,
+      icon: item.icon,
+      badge: item.key === 'teach' && status.counts.review_open > 0 ? status.counts.review_open : undefined,
+    })),
+  }));
+  const logout = () => void action(async () => { await api('/logout', 'POST'); signOut(); }, '');
+  return <ConfirmProvider><DashboardContext.Provider value={{ ...config, status, busy, revision, refresh, action, setError, signOut, go }}>
+    <TooltipProvider>
+      <SkipToMain />
+      <SidebarProvider>
+        <AppSidebar groups={groups} active={current.key} onSelect={go} onRefresh={refresh} busy={busy} />
+        <SidebarInset>
+          <Header trail={[current.name]} busy={busy} onHome={() => go('overview')} onRefresh={refresh}
+            onSettings={() => go('settings')} onLogout={logout} />
+          <Main>
+            {error && <Alert variant="destructive">
+              <AlertTitle>{error}</AlertTitle>
+              <AlertAction><Button variant="ghost" size="icon-xs" aria-label="关闭" onClick={() => setError('')}><XIcon /></Button></AlertAction>
+            </Alert>}
+            {notice && <Alert role="status" className="border-success/30 bg-success/5 text-success">
+              <AlertTitle>{notice}</AlertTitle>
+              <AlertAction><Button variant="ghost" size="icon-xs" aria-label="关闭" onClick={() => setNotice('')}><XIcon /></Button></AlertAction>
+            </Alert>}
+            <View key={current.key} />
+          </Main>
+        </SidebarInset>
+      </SidebarProvider>
+    </TooltipProvider>
+  </DashboardContext.Provider></ConfirmProvider>;
 }

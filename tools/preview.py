@@ -16,7 +16,7 @@ from shrink.api.app import create_app  # noqa: E402
 
 GROUP = "qq:group:9100000001"
 PEOPLE = {
-    "qq:9000000001": "成员甲",
+    "qq:9000000001": "白宝",
     "qq:9000000004": "小林",
     "qq:9000000003": "小周",
     "qq:9000000002": "小机",
@@ -64,9 +64,9 @@ def seed(app):
         })
     run = app.runs.start("digest", GROUP)
     repo = app.memory_repository
-    repo.add("event", "qq:9000000001", GROUP, "成员甲在做一个rust项目，已经跑通", quote="跑通了 就是缓存占了20g",
+    repo.add("event", "qq:9000000001", GROUP, "阿白在做一个rust项目，已经跑通", quote="跑通了 就是缓存占了20g",
              evidence=["preview-1"], importance=3, confidence=0.75, origin="digest", run_id=run)
-    repo.add("topic", "", GROUP, "成员甲的rust项目缓存占了20G", participants=["qq:9000000004", "qq:9000000001"],
+    repo.add("topic", "", GROUP, "阿白的rust项目缓存占了20G", participants=["qq:9000000004", "qq:9000000001"],
              quote="缓存占了20g", evidence=["preview-0", "preview-1"], origin="digest", run_id=run)
     candidate = repo.add("impression", "qq:9000000003", GROUP, "小周经常出差", certainty="inferred",
                          confidence=0.5, status="candidate", evidence=["preview-2"], origin="digest", run_id=run)
@@ -76,6 +76,7 @@ def seed(app):
              origin="digest", run_id=run)
     nid, _ = app.people_repository.add_nickname("qq:9000000004", "老林", scope=GROUP, confidence=0.5, run_id=run)
     app.people_repository.set_nickname(nid, status="candidate")
+    app.people_repository.add_nickname("qq:9000000001", "阿白", scope=GROUP, confidence=0.9, run_id=run)
     slang = repo.add("glossary", "", "", "指平台开始大规模封号", term="开杀", certainty="inferred",
                      evidence=["preview-5", "preview-7"], confidence=0.45, status="candidate",
                      origin="glossary", run_id=run)
@@ -83,7 +84,7 @@ def seed(app):
     app.review.add("glossary_guess", slang, "没有搜到依据，按群里用法推测的释义")
     app.review.add("memory_candidate", candidate, "置信度不足，等待印证或确认")
     app.review.add("nickname_guess", nid, "推断的称呼，等待确认")
-    app.digests.add(GROUP, now - 4000, now - 3880, 5, "小林问成员甲的rust项目，成员甲说跑通了但缓存很大；小周下周去上海出差。", run)
+    app.digests.add(GROUP, now - 4000, now - 3880, 5, "小林问阿白的rust项目，阿白说跑通了但缓存很大；小周下周去上海出差。", run)
     app.runs.finish(run, "success", {"messages": 5, "accepted": {"event": 1, "topic": 1},
                                      "rejected": {"memories:joke": 1, "memories:bot_only_evidence": 1},
                                      "outcomes": {"created": 4}}, "演示数据")
@@ -146,3 +147,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

@@ -59,7 +59,7 @@ def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None):
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; "
             "base-uri 'self'; form-action 'self'"
         )

@@ -17,8 +17,10 @@ const DECORATIVE = ['SHRINK', 'PERSONAL COMPANION', 'WELCOME BACK', '记得人�
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  page.on('dialog', dialog => dialog.accept());
-  const nav = name => page.locator('.nav').getByRole('button', { name: new RegExp('^' + name) }).click();
+  const nav = async name => {
+    if (!(await page.locator('.nav').count())) await page.locator('[data-slot="sidebar-trigger"]').first().click();
+    await page.locator('.nav').getByRole('button', { name: new RegExp('^' + name) }).click();
+  };
   const clean = async label => {
     const text = await page.locator('body').innerText();
     assert.ok(!PINYIN.test(text), `pinyin on ${label}`);
@@ -49,8 +51,11 @@ const DECORATIVE = ['SHRINK', 'PERSONAL COMPANION', 'WELCOME BACK', '记得人�
     await page.getByRole('button', { name: '纠正' }).click();
     await page.getByLabel('记忆内容').fill('阿白在做一个rust项目，已经上线');
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    await page.getByText('阿白在做一个rust项目，已经上线').waitFor();
-    await page.getByLabel('状态').selectOption('candidate');
+    await page.getByRole('dialog').waitFor({ state: 'detached' });
+    await page.locator('#content td').filter({ hasText: '阿白在做一个rust项目，已经上线' }).first().waitFor();
+    await page.locator('[data-slot="popover-trigger"]').filter({ hasText: '状态' }).click();
+    await page.getByRole('option', { name: '候选' }).click();
+    await page.keyboard.press('Escape');
     await page.locator('tr.clickable').first().waitFor();
     await clean('memory');
     await page.screenshot({ path: path.join(shots, 'v4-memory.png'), fullPage: true });
@@ -110,17 +115,24 @@ const DECORATIVE = ['SHRINK', 'PERSONAL COMPANION', 'WELCOME BACK', '记得人�
     await page.screenshot({ path: path.join(shots, 'v4-desktop.png'), fullPage: true });
 
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const name of ['概览', '人物', '记忆', '定向学习', '整理记录', '人格', '表情', '设置']) {
+    for (const name of ['概览', '聊天与图片', '人物', '记忆', '表情', '人格', '提示词', '定向学习', '经验', '整理记录', '夜间能力维护', '开发任务', '电脑与 Agent', '插件与能力', '设置']) {
       await nav(name);
       await page.waitForTimeout(250);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `overflow on ${name}`);
     }
     await nav('概览');
     await page.screenshot({ path: path.join(shots, 'v4-mobile.png'), fullPage: true });
-    await page.getByRole('button', { name: '退出' }).click();
+    await page.getByRole('button', { name: '切换主题' }).click();
+    await page.getByRole('menuitem', { name: '深色' }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('dark')), true, 'dark theme');
+    await page.getByRole('button', { name: '切换主题' }).click();
+    await page.getByRole('menuitem', { name: '浅色' }).click();
+    assert.equal(await page.evaluate(() => document.documentElement.classList.contains('light')), true, 'light theme');
+    await page.getByRole('button', { name: '管理员菜单' }).click();
+    await page.getByRole('menuitem', { name: '退出' }).click();
     await page.getByRole('button', { name: '登录' }).waitFor();
     assert.deepEqual(errors, []);
-    console.log('DASHBOARD_OK eight pages, nickname edit, memory correction, teach accept and review, run detail, persona, meme toggle and batch, settings, logout; desktop 1440 and mobile 390; no pinyin or decorative copy');
+    console.log('DASHBOARD_OK all pages at desktop 1440 and mobile 390; nickname edit, memory correction, teach accept and review, run detail, persona, meme toggle and batch, settings, theme menu, logout; no pinyin or decorative copy');
   } finally {
     await browser.close();
   }

@@ -69,3 +69,9 @@ tools/test_tunnel_reconnect.py
 /docs/deployment.md
 /docs/local-judge-model.md
 /docs/service-upgrades.md
+
+# AI 编码工具产物（本地技能与审计临时目录）
+.agents/
+.claude/
+.dsh-acl-recovery/
+skills-lock.json
