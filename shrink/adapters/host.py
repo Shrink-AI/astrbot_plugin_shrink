@@ -37,8 +37,16 @@ class PluginHost:
             except Exception:
                 return False
 
+        def router_prompt():
+            try:
+                return context.get_config().get("subagent_orchestrator", {}).get(
+                    "router_system_prompt", "")
+            except Exception:
+                return ""
+
         self.conversation = ConversationAdapter(
-            self.application, plugin_module, umos=self.bridge.umos, host_quotes=host_quotes
+            self.application, plugin_module, umos=self.bridge.umos, host_quotes=host_quotes,
+            router_prompt=router_prompt,
         )
         self.dashboard = None
         self.static_dir = static_dir

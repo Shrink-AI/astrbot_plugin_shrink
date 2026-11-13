@@ -1,4 +1,8 @@
+import time
+
 from fastapi import APIRouter, HTTPException
+
+from ..services.turn_trace import distribution
 
 
 def router_for(app):
@@ -24,6 +28,17 @@ def router_for(app):
             raise HTTPException(409, "任务还在进行中")
         touched = app.undo(run_id)
         return {"ok": True, "memories": len(touched)}
+
+    @router.get("/turns/latency")
+    async def turn_latency(hours: float = 24):
+        """Where foreground turns spent their time, per outcome, over the last hours."""
+        rows = app.turn_traces.since(time.time() - max(0.0, min(hours, 336)) * 3600)
+        outcomes = {}
+        for row in rows:
+            outcomes.setdefault(row["outcome"] or "ended", []).append(row)
+        return {"hours": hours, "all": distribution(rows),
+                "outcomes": {name: distribution(group) for name, group in outcomes.items()},
+                "slowest": sorted(rows, key=lambda r: r["total"], reverse=True)[:20]}
 
     @router.get("/digests")
     async def digests(source: str = "", offset: int = 0):

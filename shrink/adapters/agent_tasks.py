@@ -182,8 +182,9 @@ class AgentTasks:
                 if all(existing.get(k) == v for k, v in definition.items()):
                     return {'agent': name, 'existing': True, 'provider': provider}
                 raise ValueError('同名代理已存在且定义不同，请选新名称或通过原生管理明确更新')
+            # Tasks run through submit; the handoff list is loaded whether or not the host
+            # mounts synchronous transfer_to_* tools on the main chat, so leave that setting.
             config['agents'] = [*agents, definition]
-            config['main_enable'] = True
             await self.app.native.call('subagents', 'update', config)
         self.record('agent_created', name, result=json.dumps(definition, ensure_ascii=False))
         return {'agent': name, 'provider': provider, 'tools': definition['tools'], 'created': True}
@@ -245,9 +246,12 @@ class AgentTasks:
         from astrbot.core.astr_agent_context import AgentContextWrapper, AstrAgentContext
         from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
         from astrbot.core.agent.hooks import BaseAgentRunHooks
+        from astrbot.api import logger
+        from ..services.task_context import CURRENT_TASK
         owner = self
         class AuditHooks(BaseAgentRunHooks):
             async def on_tool_start(self, run_context, tool, tool_args):
+                logger.info(f'Shrink tool start task={CURRENT_TASK.get()} tool={tool.name}')
                 owner.record('tool_start:' + tool.name, result=json.dumps(tool_args, ensure_ascii=False, default=str))
 
             async def on_tool_end(self, run_context, tool, tool_args, tool_result):
@@ -269,7 +273,6 @@ class AgentTasks:
                     + '\n' + prompt_text('skills.authoring'), tools=tools,
                 contexts=handoff.agent.begin_dialogs or [], max_steps=128,
                 tool_call_timeout=180, agent_hooks=AuditHooks(), stream=True)
-        from ..services.task_context import CURRENT_TASK
         task_id = CURRENT_TASK.get()
         signal = self.question_signals.setdefault(task_id, asyncio.Event())
         execution = asyncio.create_task(execute())

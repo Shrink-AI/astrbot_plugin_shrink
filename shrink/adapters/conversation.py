@@ -29,8 +29,12 @@ from ..services.perception import SELF, Turn, address
 from ..services.reply_text import drop_meta_sentences, humanize, strip_reasoning
 from ..services.skills import tool_step
 from ..services.debounce import Debouncer
+from ..services.task_context import CURRENT_TASK
 from ..services.task_reporting import execution_report
 from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup
+from ..services.turn_trace import TurnTrace
+from ..persistence.turn_traces import TurnTraceRepository
+from .foreground import active_runner, release_follow_ups, request_stop, restrict
 from .notifications import Notifications
 
 REPLY_REASONS = {"direct", "engaged", "spontaneous"}
@@ -52,14 +56,17 @@ class QQSticker(BaseMessageComponent):
 
 
 class ConversationAdapter:
-    def __init__(self, app, plugin_module, umos=None, host_quotes=None):
+    def __init__(self, app, plugin_module, umos=None, host_quotes=None, router_prompt=None):
         self.app = app
         self.plugin_module = plugin_module
         self.umos = umos if umos is not None else {}
         # The host's own reply_with_quote setting quotes every reply after our hook runs.
         self.host_quotes = host_quotes or (lambda umo: False)
+        # The host's instruction to delegate through handoff tools the foreground no longer has.
+        self.router_prompt = router_prompt or (lambda: "")
         self.debouncer = Debouncer()
         self.notifications = Notifications(app)
+        self.traces = getattr(app, "turn_traces", None) or TurnTraceRepository(app.database)
         self.active_turns = {}
 
     # ---- receive ---------------------------------------------------------------------------------
@@ -106,6 +113,7 @@ class ConversationAdapter:
 
     async def receive(self, event):
         app = self.app
+        arrived = time.monotonic()
         if str(event.get_sender_id()) == str(event.get_self_id()):
             event.call_llm = True
             return
@@ -177,14 +185,29 @@ class ConversationAdapter:
             ]
             event.set_extra("shrink_merged_messages", len(burst.texts))
         if turn.reason in REPLY_REASONS:
+            running = list(self.active_turns.get(burst_key, []))
             reply = self.debouncer.begin(burst_key, turn.text, turn.reason)
             if reply.text != turn.text:
                 # An older reply to this sender was still being written; this turn answers both.
+                own = turn.text
                 turn.text, turn.reason = reply.text, reply.reason
-                event.message_str = turn.text
-                event.message_obj.message_str = turn.text
+                if running:
+                    # The host offers this message to the older run as a follow-up. That run has
+                    # already read its own message, so hand over only the new words; the merged
+                    # text is applied in enrich if this message becomes a turn of its own.
+                    event.set_extra("shrink_own_text", own)
+                else:
+                    event.message_str = turn.text
+                    event.message_obj.message_str = turn.text
                 logger.info(f"Shrink merged in-flight reply source={source}")
+            for previous, _ in running:
+                self.bind_runner(previous)
+                if cfg.cooperative_stop and self.withdrawn(previous) and request_stop(previous):
+                    # The older run would only produce a reply that is dropped; end it now so
+                    # this message does not wait behind it for the session lock.
+                    logger.info(f"Shrink stopped superseded run source={source}")
             event.set_extra("shrink_inflight", (burst_key, reply))
+            self.track(event, burst_key, reply, turn, arrived)
         event.set_extra("shrink_reply_reason", turn.reason)
         if turn.reason in REPLY_REASONS:
             logger.info(f"Shrink reply: {turn.reason} source={source}")
@@ -215,7 +238,10 @@ class ConversationAdapter:
         for previous, task in list(self.active_turns.get(key, [])):
             previous.set_extra("shrink_cancelled", True)
             self.disarm_watchdog(previous)
-            task.cancel()
+            if not (self.app.state.settings.cooperative_stop and request_stop(previous)):
+                # No run to tell yet: the turn is still queued or preparing its context, where
+                # enrich also checks the flag in case the cancellation lands inside a hook.
+                task.cancel()
         self.debouncer.pending.pop(key, None)
         self.debouncer.replies.pop(key, None)
         cancelled = await self.app.operations.cancel_owned(event)
@@ -226,11 +252,120 @@ class ConversationAdapter:
             request=turn.text, kind="cancelled")
         event.stop_event()
 
+    # ---- turn lifecycle --------------------------------------------------------------------------
+    def track(self, event, key, reply, turn, arrived):
+        """Tie the reply record and timing to the task that processes this event.
+
+        The host may end an event without calling any later hook (consumed as a follow-up by an
+        older run, cancelled, failed). Cleanup therefore hangs on the task itself; it compares
+        by identity, so an old event never clears a newer one's record.
+        """
+        trace = TurnTrace(turn.id, turn.umo, turn.source, turn.user_id, turn.reason)
+        trace.begin = trace.mark = arrived
+        trace.enter("follow_up")
+        event.set_extra("shrink_trace", trace)
+        task = asyncio.current_task()
+        if task is None:
+            return
+
+        def finished(_):
+            self.debouncer.done(key, reply)
+            runner = event.get_extra("shrink_runner")
+            if runner is not None:
+                # A run that died mid-step leaves queued follow-ups waiting forever.
+                release_follow_ups(runner)
+            consumed = event.get_extra("_follow_up_captured")
+            self.close_trace(event, "follow_up" if consumed else "ended")
+        task.add_done_callback(finished)
+
+    @staticmethod
+    def bind_runner(event):
+        if event.get_extra("shrink_runner") is None:
+            runner = active_runner(event)
+            if runner is not None:
+                event.set_extra("shrink_runner", runner)
+
+    @staticmethod
+    def enter(event, phase):
+        trace = event.get_extra("shrink_trace")
+        if trace is not None:
+            trace.enter(phase)
+
+    @staticmethod
+    def outcome(event, value):
+        trace = event.get_extra("shrink_trace")
+        if trace is not None and not trace.outcome:
+            trace.outcome = value
+
+    def close_trace(self, event, outcome):
+        trace = event.get_extra("shrink_trace")
+        if trace is None or trace.closed:
+            return
+        trace.task_id = event.get_extra("shrink_background_task") or ""
+        record = trace.finish(outcome)
+        phases = " ".join(f"{k}={v:.2f}" for k, v in record["phases"].items())
+        logger.info(
+            f"Shrink turn run={record['run_id']} input={record['input_id']} umo={record['umo']} "
+            f"sender={record['sender']} outcome={record['outcome']} total={record['total']:.2f}s "
+            f"{phases} model_calls={record['model_calls']} tools={','.join(record['tools'])} "
+            f"task={record['task_id']}")
+        try:
+            self.traces.save(record)
+        except Exception as exc:
+            self.app.tasks.error("turn_trace", exc)
+
+    def waiting(self, event):
+        """The host is about to queue for the session lock."""
+        if event.get_extra("shrink_reply"):
+            self.enter(event, "lock")
+
+    def withdrawn(self, event):
+        """A newer message from the same sender answers this one too, and nothing was done yet."""
+        reply = self.inflight(event)
+        return bool(reply and reply.superseded and not self.did_work(event))
+
+    def abandon(self, event):
+        """End a turn nobody is waiting for before the host starts a run for it."""
+        outcome = ("stopped" if event.get_extra("shrink_cancelled")
+                   else "superseded" if self.withdrawn(event) else "")
+        if outcome:
+            self.outcome(event, outcome)
+            event.stop_event()
+        return bool(outcome)
+
+    def tool_started(self, event, tool):
+        """Record that a tool is about to run. Synchronous: it must precede any wait, because a
+        tool that has started may have side effects whether or not its result ever arrives."""
+        if CURRENT_TASK.get() or not event.get_extra("shrink_reply"):
+            return
+        name = getattr(tool, "name", str(tool))
+        started = event.get_extra("shrink_started_tools")
+        if started is None:
+            started = []
+            event.set_extra("shrink_started_tools", started)
+        started.append(name)
+        reply = self.inflight(event)
+        if reply is not None and name not in CHAT_TOOLS:
+            # Work has begun on the user's behalf; its result must be reported, not withdrawn.
+            reply.committed = True
+        self.bind_runner(event)
+        trace = event.get_extra("shrink_trace")
+        if trace is not None:
+            trace.tool(name)
+            logger.info(f"Shrink tool start run={trace.run_id} tool={name}")
+
     async def enrich(self, event, req):
         turn = event.get_extra("shrink_turn")
         if not turn or not event.get_extra("shrink_reply"):
             return
         app = self.app
+        self.enter(event, "context")
+        if self.abandon(event):
+            # Stopping here makes the host leave before it registers a runner.
+            return
+        removed = restrict(req, self.router_prompt())
+        if removed:
+            logger.debug(f"Shrink foreground tools withheld: {','.join(removed)}")
         self.arm_watchdog(event)
         window = app.context.window(turn, recent_only=is_task_followup(turn.text))
         mentioned = [
@@ -307,6 +442,17 @@ class ConversationAdapter:
         event.set_extra("shrink_examples", example_ids)
         event.set_extra("shrink_skills", [s["id"] for s in skills])
         event.set_extra("shrink_tools", [])
+        own = event.get_extra("shrink_own_text")
+        if own and own != turn.text:
+            # Not consumed as a follow-up after all: this turn answers the older message too.
+            prompt = req.prompt or ""
+            req.prompt = prompt.replace(own, turn.text, 1) if own in prompt else turn.text
+            event.message_str = turn.text
+            event.message_obj.message_str = turn.text
+        if self.abandon(event):
+            # Superseded or stopped while the context was being prepared.
+            return
+        self.enter(event, "model")
 
     # ---- watchdog --------------------------------------------------------------------------------
     def arm_watchdog(self, event):
@@ -400,13 +546,35 @@ class ConversationAdapter:
 
     # ---- response --------------------------------------------------------------------------------
     async def response(self, event, response):
-        if not event.get_extra("shrink_reply") or response.tools_call_name:
+        if not event.get_extra("shrink_reply"):
             return
-        app = self.app
-        turn = event.get_extra("shrink_turn")
+        trace = event.get_extra("shrink_trace")
+        if trace is not None:
+            trace.model_calls += 1
+        self.bind_runner(event)
+        if response.tools_call_name:
+            return
         if event.get_extra("shrink_cancelled"):
             response.completion_text = ""
+            self.outcome(event, "stopped")
             return
+        if self.withdrawn(event):
+            # This reply will not be sent; do not spend expression calls on it inside the lock.
+            response.completion_text = ""
+            if response.result_chain is not None:
+                response.result_chain.chain = []
+            self.outcome(event, "superseded")
+            logger.info("Shrink dropped reply: a newer message from the same sender took over")
+            return
+        self.enter(event, "expression")
+        try:
+            await self.final_response(event, response)
+        finally:
+            self.enter(event, "send")
+
+    async def final_response(self, event, response):
+        app = self.app
+        turn = event.get_extra("shrink_turn")
         self.disarm_watchdog(event)
         event.set_extra("shrink_final_response", True)
         if getattr(response, "reasoning_content", None):
@@ -497,11 +665,13 @@ class ConversationAdapter:
         finished = event.get_extra("shrink_finished")
         if not self.debouncer.commit(self.inflight(event)) and not self.did_work(event):
             logger.info("Shrink dropped reply: a newer message from the same sender took over")
+            self.outcome(event, "superseded")
             self.release(event)
             result.chain = []
             return
         if (finished and finished.skip) or self.stale(turn):
             logger.info(f"Shrink dropped reply: {'skip' if finished and finished.skip else 'stale'}")
+            self.outcome(event, "skip" if finished and finished.skip else "stale")
             self.release(event)
             result.chain = []
             return
@@ -522,7 +692,8 @@ class ConversationAdapter:
             if event.get_extra("shrink_selected_meme"):
                 # An empty result skips after_message_sent, so sticker-only replies send here.
                 event.set_extra("shrink_sent", True)
-                await self.send_meme(event)
+                self.close_trace(event, "sent")
+                self.after_turn(self.send_meme(event))
             return
         result.chain = ([Plain(text)] if text else []) + others
         if text and self.quotes(event, turn, result.chain):
@@ -532,7 +703,9 @@ class ConversationAdapter:
 
     @staticmethod
     def did_work(event):
-        return any(s.get("name") not in CHAT_TOOLS for s in event.get_extra("shrink_tools") or [])
+        names = [s.get("name") for s in event.get_extra("shrink_tools") or []]
+        names += event.get_extra("shrink_started_tools") or []
+        return any(name not in CHAT_TOOLS for name in names)
 
     @staticmethod
     def inflight(event):
@@ -555,13 +728,32 @@ class ConversationAdapter:
         if not event.get_extra("shrink_reply") or event.get_extra("shrink_sent"):
             return
         event.set_extra("shrink_sent", True)
+        self.close_trace(event, "sent")
         self.release(event)
         app, turn = self.app, event.get_extra("shrink_turn")
         text = event.get_extra("shrink_text", "")
         if turn and text:
             app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
+        ids = event.get_extra("shrink_examples", [])
+        if ids:
+            app.expressions.used(ids)
         finished = event.get_extra("shrink_finished")
-        if turn and finished and finished.second:
+        if turn and ((finished and finished.second) or event.get_extra("shrink_selected_meme")):
+            self.after_turn(self.send_extras(event))
+
+    def after_turn(self, coroutine):
+        """Run outside the host's session lock, which this hook still holds."""
+        try:
+            self.app.tasks.spawn(coroutine)
+        except RuntimeError:
+            # Shutting down; the spawner has already closed the coroutine.
+            pass
+
+    async def send_extras(self, event):
+        """The second bubble and the sticker; each is recorded only once the platform took it."""
+        app, turn = self.app, event.get_extra("shrink_turn")
+        finished = event.get_extra("shrink_finished")
+        if finished and finished.second:
             await asyncio.sleep(random.uniform(1.0, 2.0))
             try:
                 chain = MessageChain([Plain(finished.second)])
@@ -570,9 +762,6 @@ class ConversationAdapter:
                 app.messages.record_bot(turn.source, finished.second, turn.user_id, turn.reason)
             except Exception as exc:
                 app.tasks.error("second_bubble", exc)
-        ids = event.get_extra("shrink_examples", [])
-        if ids:
-            app.expressions.used(ids)
         await self.send_meme(event)
 
     async def send_meme(self, event):
@@ -606,7 +795,6 @@ class ConversationAdapter:
 
     # ---- experience ------------------------------------------------------------------------------
     def tool_used(self, event, tool, args, result):
-        from ..services.task_context import CURRENT_TASK
         if CURRENT_TASK.get():
             import json
             operations = getattr(self.app, "operations", None)
@@ -627,6 +815,7 @@ class ConversationAdapter:
         content = getattr(result, "content", None) or []
         text = " ".join(str(getattr(c, "text", "") or "") for c in content) or str(result or "")
         tools.append(tool_step(getattr(tool, "name", str(tool)), args, text))
+        self.enter(event, "model")
 
     def record_episode(self, event, answer, outcome):
         turn = event.get_extra("shrink_turn")
@@ -643,7 +832,6 @@ class ConversationAdapter:
 
     # ---- tools -----------------------------------------------------------------------------------
     def tool_turn(self, event):
-        from ..services.task_context import CURRENT_TASK
         task_id = CURRENT_TASK.get()
         if not task_id:
             return event.get_extra("shrink_turn")

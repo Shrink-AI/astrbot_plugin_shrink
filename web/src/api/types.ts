@@ -25,6 +25,7 @@ export interface Settings {
   debounce_enabled: boolean;
   debounce_seconds: number;
   debounce_max_seconds: number;
+  cooperative_stop: boolean;
   engaged_seconds: number;
   skills_enabled: boolean;
   sandbox_url: string;

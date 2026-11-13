@@ -81,6 +81,7 @@ export function SettingsPage() {
             {flag('debounce_enabled', '合并同一个人的连续短消息')}
             {num('debounce_seconds', '等下一条消息（秒）', 0.1, 5, 0.1)}
             {num('debounce_max_seconds', '连续发言最多等待（秒）', 1, 15, 0.5)}
+            {flag('cooperative_stop', '新消息或“停”让还没动手的旧回复立刻收手（试验）')}
           </FieldGroup>
         </Section>
         <Section title="记忆与整理" desc="决定群聊什么时候被整理，以及记忆怎么存下来、带几条回去。">

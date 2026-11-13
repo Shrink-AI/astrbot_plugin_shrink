@@ -6,7 +6,6 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 from .shrink.prompts import text as prompt_text, tool_doc
 from .shrink.adapters.host import PluginHost
-from .shrink.adapters.tool_notices import ToolNoticeHooks
 
 
 @register("astrbot_plugin_shrink", "Shrink", "石英：人格、记忆、学习和表情", "0.7.0")
@@ -56,6 +55,10 @@ class ShrinkPlugin(Star):
     async def receive(self, event: AstrMessageEvent):
         await self.host.conversation.receive(event)
 
+    @filter.on_waiting_llm_request()
+    async def waiting(self, event):
+        self.host.conversation.waiting(event)
+
     @filter.on_llm_request(priority=-100)
     async def enrich(self, event, req):
         from .shrink.services.task_context import CURRENT_TASK
@@ -67,7 +70,8 @@ class ShrinkPlugin(Star):
 
     @filter.on_using_llm_tool()
     async def before_tool(self, event, tool, tool_args):
-        await ToolNoticeHooks.notify_before_tool(self, event, tool, tool_args)
+        # Record only: the host ignores errors raised here, so this cannot veto a tool.
+        self.host.conversation.tool_started(event, tool)
 
     @filter.llm_tool(name="shirnk_plugin_workbench")
     @tool_doc("shirnk_plugin_workbench", action="string", name="string", path="string", content="string")

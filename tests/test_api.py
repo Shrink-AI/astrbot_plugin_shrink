@@ -54,6 +54,15 @@ async def test_management_endpoints(tmp_path):
         assert (await client.post("/api/v1/people/x/nicknames", json={"name": "a"})).status_code == 403
         client.headers["x-csrf-token"] = login.json()["csrf"]
 
+        app.turn_traces.save({
+            "run_id": "r1", "input_id": "m1", "umo": "u", "source": "qq:group:1", "sender": PERSON_A,
+            "reason": "direct", "outcome": "sent", "task_id": "", "started": time.time(),
+            "total": 5.0, "phases": {"lock": 3.0, "model": 2.0}, "tools": [], "model_calls": 1})
+        latency = (await client.get("/api/v1/turns/latency?hours=1")).json()
+        assert latency["all"]["turns"] == 1 and latency["all"]["lock"]["p95"] == 3.0
+        assert latency["outcomes"]["sent"]["total"]["max"] == 5.0
+        assert latency["slowest"][0]["run_id"] == "r1"
+
         people = (await client.get("/api/v1/people?q=小甲")).json()
         assert people[0]["id"] == PERSON_A and {n["name"] for n in people[0]["nicknames"]} >= {"小甲"}
         assert (await client.get("/api/v1/users?q=成员甲")).status_code == 404

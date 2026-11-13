@@ -37,6 +37,9 @@ class Settings(BaseModel):
     debounce_enabled: bool = True
     debounce_seconds: float = Field(1.5, ge=0.1, le=5)
     debounce_max_seconds: float = Field(6, ge=1, le=15)
+    # Ends a superseded or stopped run through the host's own stop instead of cancelling
+    # its task. Off until verified against the real host: the host interrupts a running tool.
+    cooperative_stop: bool = False
     # 0.6: tools and experience.
     skills_enabled: bool = True
     sandbox_url: str = "http://shrink-sandbox:8765"

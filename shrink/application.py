@@ -29,6 +29,7 @@ from .services.learning import LearningService
 from .services.memes import MemeService
 from .services.prompts import PromptService
 from .persistence.prompts import PromptRepository
+from .persistence.turn_traces import TurnTraceRepository
 from .services.memory import MemoryService
 from .services.materials import Materials
 from .services.attachments import Attachments
@@ -68,6 +69,7 @@ class Application:
             self.teach_repository = TeachRepository(self.database)
             self.skill_repository = SkillRepository(self.database)
             self.prompt_repository = PromptRepository(self.database)
+            self.turn_traces = TurnTraceRepository(self.database)
             self.status = StatusRepository(self.database, self.state, self.learning_repository)
             self.tasks = Tasks(self.state)
             error = self.tasks.error

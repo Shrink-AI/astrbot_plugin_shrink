@@ -305,6 +305,7 @@ async def test_native_runner_pauses_for_question_and_requires_scoped_answer(runt
     monkeypatch.setitem(sys.modules, 'astrbot.core.astr_agent_tool_exec', SimpleNamespace(
         FunctionToolExecutor=SimpleNamespace(_build_handoff_toolset=lambda *a: ['native-tools'])))
     monkeypatch.setitem(sys.modules, 'astrbot.core.agent.hooks', SimpleNamespace(BaseAgentRunHooks=object))
+    monkeypatch.setitem(sys.modules, 'astrbot.api', SimpleNamespace(logger=Mock()))
     cancelled = asyncio.Event()
     async def native_runner(**kwargs):
         assert '原生工具' in kwargs['system_prompt']

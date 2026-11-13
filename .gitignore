@@ -75,3 +75,4 @@ tools/test_tunnel_reconnect.py
 .claude/
 .dsh-acl-recovery/
 skills-lock.json
+pytest-of-im/
