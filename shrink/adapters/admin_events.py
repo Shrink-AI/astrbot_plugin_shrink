@@ -31,3 +31,17 @@ def admin_event(context, session):
     event = CronMessageEvent(context=context, session=parsed, message='管理员后台任务')
     event.role = 'admin'
     return event
+
+
+def task_event(context, task):
+    from astrbot.core.cron.events import CronMessageEvent
+    from astrbot.core.platform.message_session import MessageSession
+    admins = {str(x) for x in context.get_config().get('admins_id', [])}
+    if task['sender'] not in admins:
+        raise PermissionError('任务创建者已不是管理员，等待重新授权')
+    session = MessageSession.from_str(task['session'])
+    event = CronMessageEvent(context=context, session=session, message=task['request'],
+                             message_type=session.message_type)
+    event.message_obj.sender.user_id = task['sender']
+    event.role = 'admin'
+    return event

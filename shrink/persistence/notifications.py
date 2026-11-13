@@ -10,8 +10,17 @@ class NotificationRepository:
                 "id TEXT PRIMARY KEY,state TEXT NOT NULL,text TEXT NOT NULL DEFAULT '',"
                 "created REAL NOT NULL,error TEXT NOT NULL DEFAULT '')")
 
-    def reserve(self, identity):
+    def get(self, identity):
+        rows = self.db.rows("SELECT * FROM notification_receipts WHERE id=?", (identity,))
+        return rows[0] if rows else None
+
+    def reserve(self, identity, *, retry=False):
         with self.db.transaction() as con:
+            if retry and con.execute(
+                    "UPDATE notification_receipts SET state='composing',error='',text='' "
+                    "WHERE id=? AND state IN ('failed','interrupted','composing')",
+                    (identity,)).rowcount:
+                return True
             return bool(con.execute(
                 "INSERT OR IGNORE INTO notification_receipts(id,state,created) VALUES(?,?,?)",
                 (identity, "composing", time.time())).rowcount)

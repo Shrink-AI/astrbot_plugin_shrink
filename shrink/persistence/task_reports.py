@@ -8,7 +8,8 @@ class TaskReports:
 
     def delivery(self, task_id, state):
         with self.database.transaction() as con:
-            con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (state, task_id))
+            con.execute('INSERT INTO task_delivery(task_id,state) VALUES(?,?) '
+                        'ON CONFLICT(task_id) DO UPDATE SET state=excluded.state', (task_id, state))
 
     def receipt(self, row, key):
         identity = json.dumps([row['session'], str(row['sender']), key], ensure_ascii=False)

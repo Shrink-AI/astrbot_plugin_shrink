@@ -161,3 +161,17 @@ export interface PromptTrialRow {
   time: number; speaker: string; said: string; original: string[];
   saved: PromptTrialReply; draft: PromptTrialReply;
 }
+
+export type TaskStatus = 'queued' | 'running' | 'waiting_external' | 'waiting_user' |
+  'retry_wait' | 'reconciling' | 'needs_attention' | 'completed' | 'failed' | 'cancelling' | 'cancelled';
+export type TaskAttempt = {
+  id: string; executor: string; session_ref: string; checkpoint_ref: string;
+  started: number | null; finished: number | null; status: string; outcome: string;
+  error_class: string; retry_ordinal: number; step: number;
+};
+export type OperationTask = {
+  id: string; request: string; session: string; sender: string; status: TaskStatus;
+  started: number; finished: number | null; result: string; failures: number; provider: string;
+  delivery: string; next_run: number | null; retry_count: number; attempts?: TaskAttempt[];
+  events?: { id: number; action: string; plugin: string; path: string; result: string }[];
+};

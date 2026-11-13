@@ -56,7 +56,8 @@ class MaintenanceRepository:
     def tasks(self):
         if not self.db.rows("SELECT name FROM sqlite_master WHERE name='operation_tasks'"):
             return []
-        return self.db.rows("SELECT * FROM operation_tasks")
+        return self.db.rows("SELECT t.*,COALESCE(d.state,'') delivery FROM operation_tasks t "
+                            "LEFT JOIN task_delivery d ON d.task_id=t.id")
 
     def linked_skill_names(self):
         return {r["name"] for r in self.db.rows("SELECT name FROM native_skill_links")}
@@ -70,9 +71,10 @@ class MaintenanceRepository:
     def review_tasks(self):
         if not self.db.rows("SELECT name FROM sqlite_master WHERE name='operation_tasks'"):
             return []
-        return self.db.rows("""SELECT t.* FROM operation_tasks t LEFT JOIN capability_task_reviews r
+        return self.db.rows("""SELECT t.*,d.state delivery FROM operation_tasks t LEFT JOIN task_delivery d ON d.task_id=t.id
+            LEFT JOIN capability_task_reviews r
             ON r.task_id=t.id WHERE r.task_id IS NULL AND t.status='completed'
-            AND t.delivery IN ('platform_accepted','delegated') ORDER BY t.finished LIMIT 20""")
+            AND d.state IN ('platform_accepted','delegated') ORDER BY t.finished LIMIT 20""")
 
     def task_events(self, task_id):
         return self.db.rows("SELECT action,result FROM operation_events WHERE task_id=? "

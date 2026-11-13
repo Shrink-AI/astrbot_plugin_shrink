@@ -17,6 +17,7 @@ class Deployments:
         self.root = self.app.state.root / "deployments"
         self.root.mkdir(exist_ok=True)
         self.worker = None
+        self.notification_attempts = set()
 
     def listing(self):
         results = []
@@ -115,8 +116,8 @@ class Deployments:
             raise ValueError("mode 必须是 hot 或 cold")
         if any(r["status"] in {"queued", "running", "issued"} for r in self.listing()):
             raise ValueError("已有部署或重载等待完成")
-        active = self.app.database.rows(
-            "SELECT id FROM operation_tasks WHERE status IN ('queued','running','waiting','testing','deploying')")
+        from ..services.task_states import ACTIVE
+        active = [r for r in self.operations.task_states.repository.list() if r["status"] in ACTIVE]
         if any(r['id'] != task_id for r in active):
             raise ValueError("其他后台任务仍在执行，请结束或明确取消后重载")
         job_id = uuid.uuid4().hex
@@ -154,6 +155,8 @@ class Deployments:
     async def loop(self):
         while True:
             for row in self.listing():
+                if row["id"] in self.notification_attempts:
+                    continue
                 directory = self.root / row["id"]
                 if row["status"] in {"queued", "running", "issued"} and not self.alive(directory):
                     try:
@@ -164,34 +167,40 @@ class Deployments:
                 if row["status"] not in {"completed", "rolled_back", "failed", "unknown"} or (directory / "reported").exists():
                     continue
                 try:
+                    if row.get("task_id") and row["status"] == "completed":
+                        await self.operations.task_inputs.repository.clear_context_async(row["task_id"])
                     result = json.dumps(row, ensure_ascii=False)
                     scope = {"session": row["session"], "sender": str(row.get("sender", ""))}
                     if not scope["sender"] and row.get("task_id"):
                         scope["sender"] = self.operations.detail(row["task_id"])["sender"]
                     delivery_path = directory / "notification.json"
                     delivery = json.loads(delivery_path.read_text("utf8")) if delivery_path.exists() else {}
+                    notices = self.operations.notifications
+                    key = "deployment:" + directory.name
+                    identity = json.dumps([scope["session"], scope["sender"], key], ensure_ascii=False)
+                    receipt = notices.repository.get(identity)
+                    if receipt:
+                        delivery = receipt
+                    if delivery.get("state") in {"sending", "unknown", "platform_accepted", "silent"}:
+                        self.notification_attempts.add(row["id"])
+                        self.save_notification(delivery_path, delivery["state"], delivery.get("text", ""))
                     if delivery.get("state") == "platform_accepted":
                         self.app.outbound.record(scope, delivery["text"], "deployment:" + directory.name)
                         (directory / "reported").write_text(str(time.time()))
                         continue
-                    if delivery.get("state") in {"sending", "unknown"}:
+                    if delivery.get("state") in {"sending", "unknown", "silent"}:
                         continue
+                    self.notification_attempts.add(row["id"])
                     if row.get("task_id"):
-                        with self.app.database.transaction() as con:
-                            con.execute("UPDATE operation_tasks SET status=?,result=?,finished=? WHERE id=?",
-                                        ("completed" if row["status"] == "completed" else "needs_attention",
-                                         result, time.time(), row["task_id"]))
-                    from astrbot.api.message_components import Plain
-                    from astrbot.core.message.message_event_result import MessageChain
-                    text = await self.app.outbound.compose(result, kind="deployment", scope=scope)
-                    self.save_notification(delivery_path, "sending", text)
-                    accepted = await asyncio.wait_for(
-                        self.operations.context.send_message(row["session"], MessageChain([Plain(text)])), 30)
-                    if not accepted:
-                        raise RuntimeError("结果发送未确认；请核对平台记录，不自动重发")
-                    self.save_notification(delivery_path, "platform_accepted", text)
-                    self.app.outbound.record(scope, text, "deployment:" + directory.name)
-                    (directory / "reported").write_text(str(time.time()))
+                        self.operations.task_states.deployment_result(
+                            row["task_id"], row["status"], result)
+                    from .notifications import notification_event
+                    event = notification_event(self.operations.context, scope["session"], scope["sender"])
+                    await notices.send_once(event, key, row, kind="deployment", retry=True)
+                    receipt = notices.repository.get(identity)
+                    self.save_notification(delivery_path, receipt["state"], receipt["text"])
+                    if receipt["state"] in {"platform_accepted", "silent"}:
+                        (directory / "reported").write_text(str(time.time()))
                 except Exception as exc:
                     self.app.tasks.error("deployment_report", exc)
             await asyncio.sleep(5)

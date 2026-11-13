@@ -208,6 +208,8 @@ class ConversationAdapter:
                     logger.info(f"Shrink stopped superseded run source={source}")
             event.set_extra("shrink_inflight", (burst_key, reply))
             self.track(event, burst_key, reply, turn, arrived)
+            # Registered from arrival, so a stop also reaches turns still queued for the lock.
+            self.arm_watchdog(event)
         event.set_extra("shrink_reply_reason", turn.reason)
         if turn.reason in REPLY_REASONS:
             logger.info(f"Shrink reply: {turn.reason} source={source}")
@@ -351,10 +353,24 @@ class ConversationAdapter:
         self.bind_runner(event)
         trace = event.get_extra("shrink_trace")
         if trace is not None:
+            if trace.phase != "tool":
+                # The host reports only the final model response to plugins; a round that
+                # asked for tools shows up here, once per round however many tools it calls.
+                trace.model_calls += 1
             trace.tool(name)
             logger.info(f"Shrink tool start run={trace.run_id} tool={name}")
 
     async def enrich(self, event, req):
+        try:
+            await self.prepare(event, req)
+        except asyncio.CancelledError:
+            # The host swallows whatever a hook raises and would go on to call the model with
+            # a half-built request. Stopping the event is what actually ends the turn.
+            if event.get_extra("shrink_cancelled"):
+                self.abandon(event)
+            raise
+
+    async def prepare(self, event, req):
         turn = event.get_extra("shrink_turn")
         if not turn or not event.get_extra("shrink_reply"):
             return
@@ -527,22 +543,11 @@ class ConversationAdapter:
         await self.send_gave_up(event, turn)
 
     async def send_gave_up(self, event, turn):
-        try:
-            from ..services.execution_status import timeout_reply
-            text = await self.app.outbound.compose(
-                timeout_reply(event.get_extra("shrink_tools"), REPLY_DEADLINE),
-                request=turn.text, kind="timeout",
-                scope={"session": event.unified_msg_origin, "sender": str(event.get_sender_id())})
-            text = strip_reasoning(text or "").strip()
-            if not text:
-                return
-        except Exception as exc:
-            self.app.tasks.error("timeout_status_reply", exc)
-            return
-        chain = MessageChain([Plain(text)])
-        chain.use_markdown(False)
-        await asyncio.wait_for(event.send(chain), 30)
-        self.app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
+        from ..services.execution_status import timeout_reply
+        await self.notifications.send_once(
+            event, turn.id + ":timeout-result",
+            timeout_reply(event.get_extra("shrink_tools"), REPLY_DEADLINE),
+            request=turn.text, kind="timeout")
 
     # ---- response --------------------------------------------------------------------------------
     async def response(self, event, response):
@@ -621,6 +626,10 @@ class ConversationAdapter:
                             "没有记录不能推断未执行，也不能声称完成，不承诺自动重试。",
                 scope={"session": event.unified_msg_origin, "sender": str(event.get_sender_id())},
             )
+            from ..services.composition import Silent
+            if isinstance(text, Silent):
+                finished.skip = True
+                text = ""
             text = strip_reasoning(text or "").strip()
             finished.text = "" if unsupported_claim(text, steps, execution) else text
             finished.second = ""

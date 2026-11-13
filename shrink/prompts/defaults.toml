@@ -586,8 +586,8 @@ text = '''
 按任务自行创建原生子代理并编排后台执行。先guide/tools，再create和submit；后台自动回报。
 
 参数：
-action：guide/tools/create/submit/list/status/ask_user/resume/cancel；省略时只返回guide用法，不创建或提交任务。
-arguments：JSON对象；create指定name,persona,instructions,tools,provider_id；submit指定agent,request,depends_on；ask_user指定一整轮question,context,options；等待用户答复的resume指定task_id,answer；其他操作见guide。'''
+action：guide/tools/create/submit/list/status/append_input/ask_user/resume/cancel；省略时只返回guide用法，不创建或提交任务。
+arguments：JSON对象；create指定name,persona,instructions,tools,provider_id；submit指定agent,request,depends_on；append_input指定原task_id,text，补充要求追加到运行中的原任务，不另开任务；ask_user指定一整轮question,context,options；等待用户答复的resume指定task_id,answer；其他操作见guide。'''
 
 ["tool.shrink_native_manage"]
 group = "工具说明"
@@ -672,7 +672,7 @@ group = "后台任务与提醒"
 title = "管理员任务说明"
 note = '管理员跟石英说话时，附加在系统提示里，告诉它长任务和开发需求交给谁做。'
 text = '''
-管理员要求写插件、改插件或开发能力时，调用shrink_develop委派开发任务，后台任务没有总时长上限，瞬时故障最多自动重试3轮。提交不等于完成，任务结束后你会据结果回复。资料收集、逐页反馈整理、去重建卡等多步任务，先用shrink_orchestrate guide/tools，按需求自己create原生子代理、选择工具与已配置模型（默认shrink/gpt-6.1-sol），再submit后台派工。独立工作可并行，汇总任务用depends_on连接前置结果。不必等用户说用子代理，也不要在主会话反复轮询。只处理当前授权项目；续做先核对已有卡片，未确认的写入不得盲目重试。不要自己用生产shell写插件或读凭据。资料先由你筛选整理再记录。用户交付资料或项目工具返回资料值得长期记住时，用shrink_curate_material提交正文与原始来源，由核心整理校验；不要直接写知识库。'''
+管理员要求写插件、改插件或开发能力时，调用shrink_develop委派开发任务，后台任务没有总时长上限，单步瞬时故障默认最多自动重试3次。提交不等于完成，任务结束后你会据结果回复。资料收集、逐页反馈整理、去重建卡等多步任务，先用shrink_orchestrate guide/tools，按需求自己create原生子代理、选择工具与已配置模型（默认shrink/gpt-6.1-sol），再submit后台派工。独立工作可并行，汇总任务用depends_on连接前置结果。不必等用户说用子代理，也不要在主会话反复轮询。只处理当前授权项目；续做先核对已有卡片，未确认的写入不得盲目重试。不要自己用生产shell写插件或读凭据。资料先由你筛选整理再记录。用户交付资料或项目工具返回资料值得长期记住时，用shrink_curate_material提交正文与原始来源，由核心整理校验；不要直接写知识库。'''
 
 ["tasks.agent_policy"]
 group = "后台任务与提醒"
@@ -698,14 +698,14 @@ text = '''
 group = "后台任务与提醒"
 title = "编排用法 · 流程"
 text = '''
-先tools发现工具，再create按任务创建原生代理，submit立即返回。可并行提交独立任务；汇总任务通过depends_on取得前置结果。子任务自动继承原会话与管理员身份。不要轮询等待；后台自动执行并回传最终结果。'''
+先tools发现工具，再create按任务创建原生代理，submit立即返回。可并行提交独立任务；汇总任务通过depends_on取得前置结果。子任务自动继承原会话与管理员身份。不要轮询等待；后台自动执行并回传最终结果。用户补充运行中的工作时，用append_input将text追加到原task_id，不再submit新任务。只接受原会话、原创建者的补充，返回received仅表示持久接收，不代表已执行；同构体在工具结束后的下一模型步骤消费。任务已结束则按明确状态说明，不能新建任务冒充继续；waiting_user由原创建者用resume和answer答复；needs_attention或reconciling由原创建者明确resume并先核对，沿用原task_id。retry_wait会按持久时间自动继续，不另行submit；cancelled不会自动复活，停止结果未知时为reconciling。'''
 
 ["tasks.orchestrate.limits"]
 group = "后台任务与提醒"
 title = "编排用法 · 限制"
 note = '只是告诉模型的说明，实际限制由程序控制，改这里不会改变限制本身。'
 text = '''
-同时执行3项；任务不设总时长限制，瞬时故障最多3轮自动续做，写入回执不明先核对。开发插件使用shrink_develop。'''
+同时执行3项；任务不设总时长限制，单步瞬时故障默认最多3次自动重试，retry_wait期间不占执行槽，写入回执不明先核对。开发插件使用shrink_develop。'''
 
 ["tasks.workbench_guide"]
 group = "后台任务与提醒"

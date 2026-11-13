@@ -42,4 +42,5 @@ class Settings(BaseModel):
     cooperative_stop: bool = False
     # 0.6: tools and experience.
     skills_enabled: bool = True
+    task_retry_limit: int = Field(3, ge=0, le=3)
     sandbox_url: str = "http://shrink-sandbox:8765"

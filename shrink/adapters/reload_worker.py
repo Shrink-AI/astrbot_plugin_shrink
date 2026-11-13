@@ -28,7 +28,7 @@ async def run(directory):
                 with sqlite3.connect(request["database"]) as db:
                     row = db.execute("SELECT status FROM operation_tasks WHERE id=?",
                                      (request["task_id"],)).fetchone()
-                if not row or row[0] not in {"queued", "running", "waiting", "testing", "deploying"}:
+                if not row or row[0] not in {"queued", "running", "cancelling"}:
                     break
                 await asyncio.sleep(1)
             # The foreground pipeline, including its final response hooks, must

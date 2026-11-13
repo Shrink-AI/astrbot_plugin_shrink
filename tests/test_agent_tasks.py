@@ -56,13 +56,13 @@ async def test_delivery_cancellation_is_persisted(runtime, monkeypatch, phase, e
     submitted = await op.submit_agent(event, 'researcher', 'test')
     await op.running[submitted['task_id']]
     monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
-    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: SimpleNamespace(chain=x, use_markdown=lambda value: None)))
     entered = asyncio.Event()
     async def wait(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
     op.app.outbound = SimpleNamespace(compose=AsyncMock(side_effect=wait) if phase == 'compose' else AsyncMock(return_value='result'), record=Mock())
-    op.context.send_message = AsyncMock(side_effect=wait)
+    event.send = AsyncMock(side_effect=wait)
     task = asyncio.create_task(AgentTasks.deliver_agent_result(op, submitted['task_id'], event))
     await entered.wait()
     task.cancel()
@@ -70,7 +70,7 @@ async def test_delivery_cancellation_is_persisted(runtime, monkeypatch, phase, e
         await task
     assert op.detail(submitted['task_id'])['delivery'] == expected
     if phase == 'compose':
-        op.context.send_message.assert_not_awaited()
+        event.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -82,13 +82,13 @@ async def test_accepted_result_is_not_sent_twice(runtime, monkeypatch):
     submitted = await op.submit_agent(event, 'researcher', 'test')
     await op.running[submitted['task_id']]
     monkeypatch.setitem(sys.modules, 'astrbot.api.message_components', SimpleNamespace(Plain=lambda x: x))
-    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: x))
+    monkeypatch.setitem(sys.modules, 'astrbot.core.message.message_event_result', SimpleNamespace(MessageChain=lambda x: SimpleNamespace(chain=x, use_markdown=lambda value: None)))
     op.app.outbound = SimpleNamespace(compose=AsyncMock(return_value='result'), record=Mock())
-    op.context.send_message = AsyncMock(return_value=True)
+    event.send = AsyncMock(return_value=True)
     await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)
     await AgentTasks.deliver_agent_result(op, submitted['task_id'], event)
     assert op.detail(submitted['task_id'])['delivery'] == 'platform_accepted'
-    op.context.send_message.assert_awaited_once()
+    event.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -100,8 +100,8 @@ async def test_redelivery_rejects_uncertain_platform_result(runtime, delivery):
     submitted = await op.submit_agent(event, 'researcher', 'test')
     task_id = submitted['task_id']
     await op.running[task_id]
-    with op.database.transaction() as con:
-        con.execute('UPDATE operation_tasks SET delivery=? WHERE id=?', (delivery, task_id))
+    from shrink.persistence.task_reports import TaskReports
+    TaskReports(op.database).delivery(task_id, delivery)
     op.deliver_agent_result.reset_mock()
     with pytest.raises(ValueError, match='发送结果不明'):
         await op.redeliver_agent_result(task_id, event)
@@ -122,7 +122,7 @@ async def test_redelivery_uses_existing_result_and_enforces_session(runtime):
     with pytest.raises(ValueError, match='当前会话'):
         await op.redeliver_agent_result(task_id, other)
     await op.redeliver_agent_result(task_id, event)
-    op.deliver_agent_result.assert_awaited_once_with(task_id, event)
+    op.deliver_agent_result.assert_awaited_once_with(task_id, event, retry=True)
     op.invoke_agent.assert_awaited_once()
     assert len(op.list()) == 1
     assert op.detail(task_id)['result'] == 'completed facts'
@@ -234,7 +234,12 @@ async def test_timeout_retries_with_checkpoint_not_empty_restart(runtime):
     submitted = await op.submit_agent(event, 'researcher', 'collect')
     await op.running[submitted['task_id']]
     row = op.detail(submitted['task_id'])
-    assert row['failures'] == 1 and row['status'] == 'completed'
+    assert row['status'] == 'retry_wait'
+    assert row['attempts'][0]['error_class'] == 'network'
+    await op.execution.tick(row['next_run'])
+    await op.running[row['id']]
+    assert op.detail(row['id'])['status'] == 'completed'
+    assert len(op.detail(row['id'])['attempts']) == 2
 
 
 @pytest.mark.asyncio
@@ -307,7 +312,7 @@ async def test_native_runner_pauses_for_question_and_requires_scoped_answer(runt
     monkeypatch.setitem(sys.modules, 'astrbot.core.agent.hooks', SimpleNamespace(BaseAgentRunHooks=object))
     monkeypatch.setitem(sys.modules, 'astrbot.api', SimpleNamespace(logger=Mock()))
     cancelled = asyncio.Event()
-    async def native_runner(**kwargs):
+    async def native_runner(context, **kwargs):
         assert '原生工具' in kwargs['system_prompt']
         if '原用户答复' in kwargs['prompt']:
             return SimpleNamespace(role='assistant', completion_text='按答复完成')
@@ -317,11 +322,11 @@ async def test_native_runner_pauses_for_question_and_requires_scoped_answer(runt
             await asyncio.Event().wait()
         finally:
             cancelled.set()
-    op.context.tool_loop_agent = native_runner
+    monkeypatch.setattr("shrink.adapters.task_runner.run_task_agent", native_runner)
     submitted = await op.submit_agent(event, 'researcher', '实现提醒')
     await op.running[submitted['task_id']]
     row = op.detail(submitted['task_id'])
-    assert row['status'] == 'awaiting_input' and cancelled.is_set()
+    assert row['status'] == 'waiting_user' and cancelled.is_set()
     assert '仅支持原会话' in row['result']
     with pytest.raises(ValueError, match='答复'):
         await op.orchestrate(event, 'resume', {'task_id': row['id']})
@@ -333,7 +338,8 @@ async def test_native_runner_pauses_for_question_and_requires_scoped_answer(runt
     await op.running[resumed['task_id']]
     assert op.detail(resumed['task_id'])['status'] == 'completed'
     assert op.clarifications.get(row['id'])['answer'] == '是，原会话'
-    assert op.detail(row['id'])['status'] == 'continued'
+    assert resumed['task_id'] == row['id']
+    assert len(op.detail(row['id'])['attempts']) == 2
 
 
 @pytest.mark.asyncio
@@ -355,9 +361,9 @@ async def test_child_questions_are_batched_by_parent(runtime):
     submitted = await op.submit_agent(event, 'coordinator', '做功能')
     await op.running[submitted['task_id']]
     row = op.detail(submitted['task_id'])
-    assert row['status'] == 'awaiting_input'
+    assert row['status'] == 'waiting_user'
     assert 'Q1' in row['result'] and 'Q2' in row['result']
-    assert all(r['status'] == 'awaiting_input' for r in op.list())
+    assert all(r['status'] == 'waiting_user' for r in op.list())
     op.deliver_agent_result.assert_awaited_once()
 
 

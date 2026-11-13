@@ -27,7 +27,7 @@ def delivery_owner(task, candidates):
             continue
         if (candidate['session'], str(candidate['sender'])) != (task['session'], str(task['sender'])):
             continue
-        if candidate['status'] not in {'queued', 'running', 'waiting'}:
+        if candidate['status'] not in {'queued', 'running', 'waiting_external', 'retry_wait'}:
             continue
         if task['id'] in json.loads(candidate.get('dependencies') or '[]'):
             return candidate['id']

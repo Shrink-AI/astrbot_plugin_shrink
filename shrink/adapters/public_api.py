@@ -1,5 +1,6 @@
 """Core-owned persona composition, independent of consuming plugins."""
 from .plugin_protocol import validate, success
+from ..services.composition import Silent
 
 
 class PublicAPI:
@@ -12,7 +13,7 @@ class PublicAPI:
             'actions': {'record_sent': {'description': '记录已确认发送的文本及唯一回执', 'readonly': False,
                 'parameters': {'type': 'object', 'required': ['text', 'delivery_id'], 'properties': {
                     'text': {'type': 'string'}, 'delivery_id': {'type': 'string'}}}},
-                'compose': {'description': '表达给定事实和沟通要求', 'readonly': True,
+                'compose': {'description': '表达给定事实；返回status=ready与text，或status=silent（不得发送或回退原文）', 'readonly': True,
                 'parameters': {'type': 'object', 'required': ['facts'], 'properties': {
                     'facts': {'type': 'string'}, 'instruction': {'type': 'string'}, 'request': {'type': 'string'}, 'kind': {'type': 'string'}}}}}}]}
 
@@ -34,4 +35,6 @@ class PublicAPI:
         text = await app.outbound.compose(facts, instruction=instruction,
             request=str(args.get('request', '')), kind=str(args.get('kind', 'result')),
             scope=request.get('scope'))
-        return success({'text': text})
+        if isinstance(text, Silent):
+            return success({'status': 'silent', 'reason': text.reason})
+        return success({'status': 'ready', 'text': text})

@@ -4,6 +4,11 @@ import json
 from types import SimpleNamespace
 import time
 
+import httpx
+
+from ..persistence.compositions import Compositions
+from .composition import ChatReply, SILENT, Silent, fallback
+
 from ..config import persona_prompt
 from ..prompts import render
 from .reply_text import strip_reasoning, take_markers
@@ -13,20 +18,39 @@ class Outbound:
     def __init__(self, app):
         self.app = app
         self.resolve_scope = lambda scope: None
+        self.repository = Compositions(app.database)
+        self.attempt_timeout = 15
 
     async def compose(self, facts, *, request="", kind="result", instruction="", scope=None,
                       context=None, recent=None):
-        try:
-            return await self._compose(facts, request=request, kind=kind, instruction=instruction,
-                                       scope=scope, context=context, recent=recent)
-        except Exception as exc:
-            self.app.tasks.error("outbound_composition", exc)
-            # A completed chat answer is already present; a failed rewrite must not erase it.
-            if kind == "tool_result" and isinstance(facts, str):
-                return strip_reasoning(facts) or render("outbound.fallback")
-            if kind == "tool_result" and isinstance(facts, dict) and isinstance(facts.get("answer"), str):
-                return strip_reasoning(facts["answer"]) or render("outbound.fallback")
-            return render("outbound.fallback")
+        chat = facts if isinstance(facts, ChatReply) else None
+        if chat is not None:
+            facts = {"answer": chat.text, "execution": chat.execution}
+        identity = None if chat is not None else self.repository.save(facts, request, kind, scope)
+        result = None
+        for attempt in range(2):
+            try:
+                result = await self._compose(facts, request=request, kind=kind, instruction=instruction,
+                                             scope=scope, context=context, recent=recent)
+                break
+            except Exception as exc:
+                self.app.tasks.error("outbound_composition", exc)
+                if attempt == 0 and isinstance(exc, (TimeoutError, ConnectionError, OSError,
+                                                     httpx.TransportError, EmptyComposition)):
+                    continue
+                if chat is not None:
+                    clean, _, _ = take_markers(strip_reasoning(chat.text))
+                    result = clean.strip() or render("outbound.fallback")
+                elif kind in {"progress", "tool_progress"}:
+                    result = SILENT
+                else:
+                    known = facts.get("status") if isinstance(facts, dict) else None
+                    result = fallback(known) or render("outbound.fallback")
+                break
+        if identity is not None:
+            self.repository.finish(identity, "silent" if isinstance(result, Silent) else "ready",
+                                   "" if isinstance(result, Silent) else result)
+        return result
 
     async def _compose(self, facts, *, request, kind, instruction, scope, context, recent):
         app = self.app
@@ -49,10 +73,10 @@ class Outbound:
                         context=json.dumps(evidence, ensure_ascii=False),
                         recent=json.dumps(recent, ensure_ascii=False))
         reply = await asyncio.wait_for(app.expression.model(
-            prompt, persona_prompt(app.persona_repository.learned_persona())), 30)
+            prompt, persona_prompt(app.persona_repository.learned_persona())), self.attempt_timeout)
         reply, _, _ = take_markers(strip_reasoning(reply or ""))
         if not reply.strip():
-            raise ValueError("empty composition")
+            raise EmptyComposition("empty composition")
         return reply.strip()
 
     def record(self, scope, text, delivery_id):
@@ -61,3 +85,7 @@ class Outbound:
             return False
         from ..persistence.outbound import record_delivery
         return record_delivery(self.app, source, text, delivery_id)
+
+
+class EmptyComposition(ValueError):
+    pass

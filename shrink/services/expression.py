@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from ..prompts.chat import persona_prompt, rewrite_prompt, turn_prompt
 from ..text_rules import grams
+from .composition import ChatReply, Silent
 from .reply_text import (
     drop_meta_sentences,
     humanize,
@@ -112,9 +113,11 @@ class ExpressionService:
         text = drop_meta_sentences(text) if looks_like_meta(text) else text
         if form == "tool_result":
             if getattr(self, "outbound", None):
-                facts = {"answer": text, "execution": execution} if execution else text
+                facts = ChatReply(text, execution)
                 text = await self.outbound.compose(facts, request=user_text, kind="tool_result",
                                                    context=context, recent=recent)
+                if isinstance(text, Silent):
+                    return Finished("", skip=True)
             return Finished(strip_reasoning(text).strip(), meme_id=meme_id)
         if form == "detail":
             return Finished(strip_reasoning(text).strip(), meme_id=meme_id)

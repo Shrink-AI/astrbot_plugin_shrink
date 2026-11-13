@@ -111,7 +111,7 @@ class PluginHost:
             app.start()
             app.tasks.spawn(self.knowledge.start())
             app.tasks.spawn(self.native_skills.start())
-            app.tasks.spawn(self.operations.deployments.start())
+            app.tasks.spawn(self.operations.start())
         except BaseException:
             await self.close()
             raise

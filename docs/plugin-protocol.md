@@ -34,6 +34,8 @@ AstrBot 激活插件实例可实现两个方法：同步 `plugin_capabilities()`
 | computer.project | 桌面接入插件 | 在授权设备上执行受限制的项目 CLI |
 | reminders.manage | 提醒插件 | 创建、查看、取消提醒及回执 |
 
+`message.compose` 的 `compose` 返回 `{"status":"ready","text":"…"}` 或 `{"status":"silent","reason":"expression_unavailable"}`。`silent` 是成功的静默决定，没有 `text`；调用方必须停止发送，不能将缺少文本视为错误后回退到 facts、事件 body 或日志。外部 facts 始终按执行资料处理，`kind="tool_result"` 不授予原文外发资格。原始资料先保存到核心 `outbound_compositions` 表，保留 14 天，启动及后续写入时清理；主模型聊天答复不在该表重复留底。表达超时或空输出最多重试表达一次，不重跑工具。`compose` 保持 `readonly:true`，内部留底不要求用户逐次确认；`record_sent` 仍是写操作。`record_sent` 仍只记录平台已接受的文本。
+
 旧原生工具名继续可用；`shrink_deliver_reminder` 为兼容已保存 Cron 任务而保留，但注册方是提醒插件。石英以 `shrink_plugin_capability` 发现和调用协议能力，后台“插件公开能力”使用同一目录和参数。正常工具结果继续经过石英筛选整理后才可入记忆。
 
 ## 提醒迁移

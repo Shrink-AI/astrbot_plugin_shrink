@@ -86,7 +86,7 @@ async def run(directory):
             with sqlite3.connect(request["database"]) as connection:
                 row = connection.execute("SELECT status FROM operation_tasks WHERE id=?",
                                          (request["task_id"],)).fetchone()
-            if not row or row[0] not in {"queued", "running", "testing", "deploying"}:
+            if not row or row[0] not in {"queued", "running", "cancelling"}:
                 break
             await asyncio.sleep(1)
         await asyncio.sleep(2)

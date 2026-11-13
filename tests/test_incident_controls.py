@@ -403,3 +403,22 @@ async def test_cooperative_stop_uses_the_run_instead_of_cancelling(app, host_mod
     assert not tasks[0].cancelled() and tasks[1].cancelled()
     tasks[0].cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_inside_the_request_hook_stops_the_event(app, host_modules):
+    """The host swallows the cancellation; without a stopped event it would call the model."""
+    adapter = host_modules.ConversationAdapter(app, "test")
+
+    async def cancelled(event, req):
+        raise asyncio.CancelledError()
+    adapter.prepare = cancelled
+    event = Event()
+    event.set_extra("shrink_cancelled", True)
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.enrich(event, SimpleNamespace())
+    event.stop_event.assert_called_once()
+    other = Event()
+    with pytest.raises(asyncio.CancelledError):
+        await adapter.enrich(other, SimpleNamespace())
+    other.stop_event.assert_not_called()

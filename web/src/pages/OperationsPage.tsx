@@ -10,25 +10,22 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { api } from '@/api/client';
+import type { OperationTask as Task } from '@/api/types';
 import { useConfirm } from '@/components/confirm-dialog';
 import { Badge, Empty, PageHead, Panel } from '@/shared/components';
 import { useDashboard } from '@/shared/dashboard';
 import { date } from '@/shared/format';
 
-type Task = { id: string; request: string; session: string; status: string;
-  started: number; result: string; failures: number; provider: string;
-  events?: { id: number; action: string; plugin: string; path: string; result: string }[] };
 const labels: Record<string, string> = {
-  queued: '排队', running: '执行中', testing: '测试中', deploying: '部署中',
-  completed: '已部署', failed: '失败', cancelled: '已取消',
-  interrupted: '已中断', timed_out: '已超时', needs_attention: '待处理',
-  awaiting_deployment: '独立部署验证中',
-  rolled_back: '失败后已恢复',
+  queued: '排队', running: '执行中', waiting_external: '等待外部结果', waiting_user: '等待答复',
+  retry_wait: '等待重试', reconciling: '核对结果', needs_attention: '待处理',
+  completed: '已完成', failed: '失败', cancelling: '正在停止', cancelled: '已取消',
+  issued: '已交付执行器', unknown: '结果未知', rolled_back: '失败后已恢复',
 };
 const statusTone = (status: string): 'ok' | 'warn' | 'bad' | 'info' | undefined =>
   status === 'completed' ? 'ok'
-    : ['failed', 'interrupted', 'timed_out'].includes(status) ? 'bad'
-      : ['running', 'testing', 'deploying'].includes(status) ? 'info'
+    : ['failed', 'needs_attention'].includes(status) ? 'bad'
+      : ['running', 'cancelling', 'reconciling'].includes(status) ? 'info'
         : status ? 'warn' : undefined;
 
 export function OperationsPage() {
@@ -38,6 +35,7 @@ export function OperationsPage() {
   const [selected, setSelected] = useState<Task | null>(null);
   const [request, setRequest] = useState('');
   const [session, setSession] = useState('');
+  const [answer, setAnswer] = useState('');
   const [plugin, setPlugin] = useState('');
   const [path, setPath] = useState('main.py');
   const [content, setContent] = useState('');
@@ -82,7 +80,7 @@ export function OperationsPage() {
             <Input id="operation-session" value={session} onChange={e => setSession(e.target.value)}
               placeholder="snowluma:FriendMessage:QQ号" />
           </Field>
-          <p className="text-sm text-muted-foreground">石英会自行编写、隔离测试和启用。每次最多30分钟、3轮修复。</p>
+          <p className="text-sm text-muted-foreground">石英会自行编写、隔离测试和启用。请求故障按单步重试，默认最多重试 3 次；等待期间可以查询或停止。</p>
           <div className="flex flex-wrap items-center gap-2">
             <Button disabled={!request.trim() || !session.trim()} onClick={() => void action(async () => {
               await api('/operations/tasks', 'POST', { request, session }); setRequest('');
@@ -100,9 +98,13 @@ export function OperationsPage() {
             </TableCell>
             <TableCell><Badge tone={statusTone(t.status)}>{labels[t.status] || t.status}</Badge></TableCell>
             <TableCell className="text-right tabular-nums">{date(t.started)}</TableCell>
-            <TableCell>{['queued', 'running', 'testing', 'deploying'].includes(t.status)
-              ? <Button variant="outline" size="sm" onClick={() => void action(() => api(`/operations/tasks/${t.id}/cancel`, 'POST'), '已取消')}>取消</Button>
-              : <Button variant="outline" size="sm" onClick={() => void action(() => api(`/operations/tasks/${t.id}/resume`, 'POST'), '已续做')}>续做</Button>}</TableCell>
+            <TableCell><div className="flex gap-2">
+              {['queued', 'running', 'waiting_external', 'waiting_user', 'retry_wait'].includes(t.status) &&
+                <Button variant="outline" size="sm" onClick={() => void action(() => api(`/operations/tasks/${t.id}/cancel`, 'POST'), '停止请求已处理')}>停止</Button>}
+              {t.status === 'waiting_user' && <Button variant="outline" size="sm" onClick={() => void inspect(t.id)}>答复</Button>}
+              {['failed', 'cancelled', 'needs_attention', 'reconciling'].includes(t.status) &&
+                <Button variant="outline" size="sm" onClick={() => void action(() => api(`/operations/tasks/${t.id}/resume`, 'POST'), '已提交续做')}>核对并续做</Button>}
+            </div></TableCell>
           </TableRow>)}</TableBody>
         </Table>}
       </Panel>
@@ -110,6 +112,18 @@ export function OperationsPage() {
         <div className="flex flex-col gap-3">
           <p className="text-sm break-words">{selected.request}</p>
           <p className="text-sm text-muted-foreground">{labels[selected.status]} · {selected.provider} · 失败测试 {selected.failures} 轮</p>
+          <p className="text-sm text-muted-foreground">通知：{selected.delivery || '尚无回执'}{selected.next_run ? ` · 下次执行：${date(selected.next_run)}` : ''}</p>
+          {selected.status === 'waiting_user' && <Field>
+            <FieldLabel htmlFor="task-answer">答复原任务的问题</FieldLabel>
+            <Textarea id="task-answer" value={answer} onChange={e => setAnswer(e.target.value)} />
+            <Button disabled={!answer.trim()} onClick={() => void action(async () => {
+              await api(`/operations/tasks/${selected.id}/resume`, 'POST', { answer });
+              setAnswer(''); await inspect(selected.id);
+            }, '已提交答复')}>答复并继续原任务</Button>
+          </Field>}
+          {selected.attempts?.map(attempt => <p key={attempt.id} className="text-sm text-muted-foreground">
+            {attempt.executor} · {attempt.status} · 重试序号 {attempt.retry_ordinal} · {attempt.error_class || attempt.outcome}
+          </p>)}
           <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/40 p-2.5 font-mono text-xs whitespace-pre-wrap break-words">{selected.result || '尚无最终结果'}</pre>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => void inspect(selected.id)}>刷新详情</Button>

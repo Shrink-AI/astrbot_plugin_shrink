@@ -8,6 +8,10 @@ class Submit(BaseModel):
     session: str = ""
 
 
+class Resume(BaseModel):
+    answer: str = Field(default="", max_length=12000)
+
+
 class NativeCall(BaseModel):
     resource: str
     action: str
@@ -79,19 +83,16 @@ def router_for(app):
         return await app.operations.cancel(task_id)
 
     @router.post("/tasks/{task_id}/resume")
-    async def resume(task_id: str):
+    async def resume(task_id: str, body: Resume | None = None):
         previous = app.operations.detail(task_id)
-        if previous.get('kind') == 'agent':
-            return await app.operations.orchestrate(event_for(previous['session']), 'resume', {'task_id': task_id})
-        return await app.operations.submit(
-            event_for(previous["session"]),
-            previous["request"] + "\n继续已有草稿，先查看差异与上次结果：\n" + previous["result"],
-            parent=task_id)
+        return await app.operations.orchestrate(
+            app.operations.task_event(previous), 'resume',
+            {'task_id': task_id, 'answer': body.answer if body else ''})
 
     @router.post("/tasks/{task_id}/redeliver")
     async def redeliver(task_id: str):
         previous = app.operations.detail(task_id)
-        return await app.operations.redeliver_agent_result(task_id, event_for(previous['session']))
+        return await app.operations.redeliver_agent_result(task_id, app.operations.task_event(previous))
 
     @router.get("/capabilities")
     async def capabilities():
