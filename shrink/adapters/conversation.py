@@ -868,8 +868,13 @@ class ConversationAdapter:
         turn = self.tool_turn(event)
         if not turn:
             return prompt_text("toolret.no_turn")
+        own = event.get_extra("shrink_turn")
+        # Only the person's own words in this turn can widen the search; a background task
+        # works for its owner's scope and gets no such request.
+        request = own.text if own is turn and own else ""
         return await self.app.tools.lookup(
-            query, source=turn.source, speaker=turn.user_id, private=turn.private
+            query, source=turn.source, speaker=turn.user_id, private=turn.private,
+            request=request,
         )
 
     async def find_meme(self, event, keyword):

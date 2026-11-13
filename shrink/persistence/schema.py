@@ -20,6 +20,7 @@ TABLES = [
     "CREATE INDEX IF NOT EXISTS messages_learning ON messages(learned, learnable, created)",
     "CREATE INDEX IF NOT EXISTS messages_digest ON messages(digested, source, created)",
     "CREATE INDEX IF NOT EXISTS messages_user_time ON messages(user_id, created)",
+    "CREATE INDEX IF NOT EXISTS messages_addressee_time ON messages(addressee, created)",
     """CREATE TABLE IF NOT EXISTS memories(
       id INTEGER PRIMARY KEY, kind TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '',
       term TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', text TEXT NOT NULL,

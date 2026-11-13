@@ -142,12 +142,13 @@ class MessageRepository:
             )
         ]
 
-    def elsewhere(self, user_id, source, since, limit=6):
-        """The speaker's recent exchange with the bot in other conversations."""
+    def elsewhere(self, user_id, source, since, limit=6, include_private=True):
+        """What a person said in other conversations, to anyone, and the bot's replies to them."""
         return self.database.rows(
-            "SELECT * FROM messages WHERE source!=? AND created>? AND "
+            "SELECT * FROM messages WHERE source!=? AND created>? AND length(trim(text))>0 AND "
+            "(?=1 OR instr(source,':private:')=0) AND "
             "(user_id=? OR (is_bot=1 AND addressee=?)) ORDER BY created DESC LIMIT ?",
-            (source, since, user_id, user_id, limit),
+            (source, since, int(include_private), user_id, user_id, limit),
         )
 
     def get_many(self, ids):

@@ -34,6 +34,7 @@ from .services.memory import MemoryService
 from .services.materials import Materials
 from .services.attachments import Attachments
 from .services.participation import Participation
+from .services.recent import RecentInteractions
 from .services.people import PeopleService
 from .services.persona import PersonaService
 from .services.skills import SkillService
@@ -80,7 +81,9 @@ class Application:
             self.persona = PersonaService(self.persona_repository, self.state, sync_persona)
             self.prompts = PromptService(self.prompt_repository, self.persona)
             self.prompts.load()
-            self.context = ContextService(self.state, self.messages, self.digests, self.people)
+            self.recent = RecentInteractions(self.messages)
+            self.context = ContextService(
+                self.state, self.messages, self.digests, self.people, self.recent)
             self.participation = Participation(
                 self.state, self.messages.last_bot_reply_to, self.interest
             )
@@ -117,6 +120,7 @@ class Application:
             self.tools = ToolService(
                 messages=self.messages, digests=self.digests, people=self.people,
                 memory=self.memory, memes=self.memes, state=self.state, error=error,
+                recent=self.recent,
             )
             self.scheduler = Scheduler(
                 self.state, self.learning, self.memory, error,

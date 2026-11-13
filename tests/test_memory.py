@@ -385,7 +385,7 @@ def test_context_window_is_budgeted_and_marks_speakers(world):
     assert "很久以前" not in window.text
     say(world, "other1", PERSON_A, "我在别的群问了个问题", source=H, ago=600)
     window = world.context.window(current)
-    assert "刚才在别处" in window.text and "我在别的群问了个问题" in window.text
+    assert "最近在别处说过" in window.text and "我在别的群问了个问题" in window.text
 
 
 # ---- directed learning ---------------------------------------------------------------------------

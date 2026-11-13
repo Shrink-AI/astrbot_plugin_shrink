@@ -202,7 +202,7 @@ async def test_background_lookup_uses_owned_task_scope_not_stale_turn(app, host_
     try:
         assert await adapter.lookup(event, "方法") == "scoped memory"
         app.tools.lookup.assert_awaited_once_with(
-            "方法", source="qq:private:123", speaker="qq:123", private=True)
+            "方法", source="qq:private:123", speaker="qq:123", private=True, request="")
         app.operations.owned_task.side_effect = ValueError("wrong owner")
         with pytest.raises(ValueError):
             await adapter.lookup(event, "方法")

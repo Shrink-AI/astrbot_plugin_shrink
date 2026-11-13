@@ -28,7 +28,8 @@ def _clip(text, limit=LINE_LIMIT):
 
 
 class ToolService:
-    def __init__(self, *, messages, digests, people, memory, memes, state, error):
+    def __init__(self, *, messages, digests, people, memory, memes, state, error, recent=None):
+        self.recent = recent
         self.messages, self.digests, self.people = messages, digests, people
         self.memory, self.memes, self.state, self.error = memory, memes, state, error
 
@@ -114,7 +115,7 @@ class ToolService:
         return "\n".join(parts)[:OUTPUT_LIMIT]
 
     # ---- people and memories -----------------------------------------------------------------------
-    async def lookup(self, query, *, source, speaker, private):
+    async def lookup(self, query, *, source, speaker, private, request=""):
         query = (query or "").strip()[:100]
         if not query:
             return "要查谁或什么？"
@@ -135,6 +136,14 @@ class ToolService:
         )
         if rendered:
             parts.append(rendered)
+        if self.recent and speaker:
+            # The asker's own words in other conversations. What they wrote decides how far
+            # back to look and whether their private chat counts; the model's query does not.
+            name = self.people.display(speaker)
+            found = self.recent.find(speaker, source, query + " " + request, name=name,
+                                     request=request, lines=20, budget=1600)
+            if found.lines or found.asked:
+                parts.extend(self.recent.render(found, name))
         if not parts:
             return f"没有关于“{query}”的记忆。"
         return "\n".join(parts)[:OUTPUT_LIMIT]

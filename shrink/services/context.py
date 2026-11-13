@@ -2,17 +2,16 @@
 
 import datetime
 import json
-import time
 from dataclasses import dataclass, field
 
 from ..config import BOT_NAME
 from ..text_rules import grams
+from .recent import RecentInteractions
 
 GAP_SECONDS = 20 * 60
 MIN_LINES = 6
 GAP_MIN_LINES = 10
 LINE_LIMIT = 120
-ELSEWHERE_SECONDS = 6 * 3600
 
 
 @dataclass
@@ -33,13 +32,10 @@ def _date(ts):
     return f"{value.month}月{value.day}日 {value:%H:%M}"
 
 
-def _where(source):
-    return "私聊" if ":private:" in source else source.rsplit(":", 1)[-1] + "群"
-
-
 class ContextService:
-    def __init__(self, state, messages, digests, people):
+    def __init__(self, state, messages, digests, people, recent=None):
         self.state, self.messages, self.digests, self.people = state, messages, digests, people
+        self.recent = recent or RecentInteractions(messages)
 
     def line(self, row, current_id=None):
         if row["is_bot"]:
@@ -95,15 +91,10 @@ class ContextService:
         for digest in old:
             if digest["end"] < start - 3600:
                 sections.append(f"（之前聊过，{_date(digest['start'])}）{digest['summary']}")
-        elsewhere = [] if same_source_only or recent_only else self.messages.elsewhere(
-            turn.user_id, turn.source, time.time() - ELSEWHERE_SECONDS, 6
-        )
-        if elsewhere:
-            sections.append(f"（刚才在别处和 {turn.name} 的往来）")
-            for row in reversed(elsewhere):
-                row = dict(row)
-                row.setdefault("person_name", turn.name if row["user_id"] == turn.user_id else "")
-                sections.append(f"  {_where(row['source'])} " + self.line(row))
+        if not (same_source_only or recent_only):
+            name = turn.name or self.people.display(turn.user_id)
+            found = self.recent.find(turn.user_id, turn.source, turn.text, name=name)
+            sections.extend(self.recent.render(found, name))
         sections.append("（最近）")
         sections.extend(line for _, line in picked)
         texts = [r["text"] for r, _ in picked if r["id"] != turn.id and r["text"]][-3:]
