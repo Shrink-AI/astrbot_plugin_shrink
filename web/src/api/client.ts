@@ -7,7 +7,7 @@ export async function api<T = unknown>(path: string, method = 'GET', data?: unkn
   const response = await fetch('/api/v1' + path, {
     method, credentials: 'same-origin',
     headers: {
-      ...(method === 'GET' ? {} : { 'X-CSRF-Token': csrf }),
+      ...(method === 'GET' ? {} : { 'X-CSRF-Token': csrf, 'Idempotency-Key': crypto.randomUUID() }),
       ...(data && !multipart ? { 'Content-Type': 'application/json' } : {})
     },
     body: data ? (multipart ? data : JSON.stringify(data)) : undefined,

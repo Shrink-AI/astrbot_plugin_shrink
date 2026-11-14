@@ -64,10 +64,18 @@ class ExecutionContext:
             if len(encoded) < len(previous):
                 con.execute("DELETE FROM task_context_messages WHERE task_id=? AND position>=?",
                             (task_id, len(encoded)))
-            for column, identities in (("entered", entered), ("processed", processed)):
-                con.executemany(f"UPDATE task_inputs SET {column}=COALESCE({column},?) "
-                                "WHERE task_id=? AND id=?",
-                                [(time.time(), task_id, identity) for identity in identities])
+            now = time.time()
+            con.executemany("UPDATE task_inputs SET entered=COALESCE(entered,?) WHERE task_id=? AND id=?",
+                            [(now, task_id, identity) for identity in entered])
+            con.executemany("UPDATE task_inputs SET processed=COALESCE(processed,?) WHERE task_id=? AND id=?",
+                            [(now, task_id, identity) for identity in processed])
+            con.executemany("UPDATE input_events SET claimed=COALESCE(claimed,?) "
+                            "WHERE id=(SELECT input_id FROM task_inputs WHERE task_id=? AND id=?)",
+                            [(now, task_id, identity) for identity in entered])
+            con.executemany("UPDATE input_events SET processed=COALESCE(processed,?) "
+                            "WHERE id=(SELECT input_id FROM task_inputs WHERE task_id=? AND id=?) "
+                            "AND NOT EXISTS(SELECT 1 FROM task_inputs WHERE input_id=input_events.id AND processed IS NULL)",
+                            [(now, task_id, identity) for identity in processed])
         self.cached[task_id] = encoded
 
     def save(self, task_id, messages, **positions):

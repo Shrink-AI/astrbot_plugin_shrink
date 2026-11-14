@@ -18,8 +18,19 @@ class Notifications:
     async def send_once(self, event, key, facts, *, request="", kind="progress", retry=False):
         scope = {"session": event.unified_msg_origin, "sender": str(event.get_sender_id())}
         identity = json.dumps([scope["session"], scope["sender"], key], ensure_ascii=False)
+        incoming = None
+        if getattr(self.app, "inbox", None):
+            incoming, _ = self.app.inbox.event(
+                session=scope["session"], sender=scope["sender"], external_id=key,
+                source="notification", route="notification", text=json.dumps(facts, ensure_ascii=False),
+                metadata={"kind": kind})
         if identity in self.inflight or not self.repository.reserve(identity, retry=retry):
+            if incoming and self.repository.get(identity):
+                self.app.inbox.repository.complete([incoming["id"]])
             return False
+        if incoming:
+            # Consumption hands responsibility to the durable notification receipt.
+            self.app.inbox.repository.complete([incoming["id"]])
         self.inflight.add(identity)
         sending = False
         try:

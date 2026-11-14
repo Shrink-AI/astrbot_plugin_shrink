@@ -74,6 +74,16 @@ class Application:
             self.status = StatusRepository(self.database, self.state, self.learning_repository)
             self.tasks = Tasks(self.state)
             error = self.tasks.error
+            from .persistence.history import HistoryRepository
+            from .persistence.inbox import InboxRepository
+            from .services.history import ConversationHistory
+            from .services.inbox import Inbox
+            self.history = ConversationHistory(HistoryRepository(self.database), self.messages, model, error)
+            self.inbox = Inbox(InboxRepository(self.database), self.messages, self.history)
+            from .persistence.decisions import DecisionRepository
+            from .services.decisions import Decisions
+            self.decisions = Decisions(DecisionRepository(self.database), self.inbox.repository,
+                                       self.messages, self.state)
             self.people = PeopleService(self.people_repository, self.messages)
             self.memory = MemoryService(
                 self.memory_repository, self.state, embed, error, self.people, self.review

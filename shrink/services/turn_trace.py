@@ -3,7 +3,7 @@ import time
 import uuid
 
 # Each phase ends where the next begins, so the phases add up to the turn's total.
-PHASES = ("debounce", "follow_up", "lock", "context", "model", "tool", "expression", "send")
+PHASES = ("decision", "debounce", "follow_up", "lock", "context", "model", "tool", "expression", "send")
 
 
 class TurnTrace:
@@ -19,6 +19,7 @@ class TurnTrace:
         self.tools = []
         self.model_calls = 0
         self.task_id = ""
+        self.system_prefix_same = None
         self.outcome = ""
         self.closed = False
 
@@ -48,6 +49,7 @@ class TurnTrace:
             "total": round(self.clock() - self.begin, 3),
             "phases": {k: round(v, 3) for k, v in self.phases.items()},
             "tools": list(self.tools), "model_calls": self.model_calls,
+            "system_prefix_same": self.system_prefix_same,
         }
 
 

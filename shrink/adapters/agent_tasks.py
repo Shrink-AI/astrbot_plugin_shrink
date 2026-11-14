@@ -47,7 +47,7 @@ class AgentTasks:
                 'ask_user': {'question': '问题与建议答案', 'context': '已查明事实和受影响步骤',
                              'options': ['可选方案']},
                 'resume_after_question': {'task_id': '待答复任务ID', 'answer': '原用户的答复'},
-                'append_input': {'task_id': '原任务ID', 'text': '原创建者的补充要求；消息标识由入口获取'},
+                'append_input': {'task_id': '原任务ID；本轮决策已明确时可省略', 'text': '原创建者的补充要求；消息标识由入口获取'},
                 'list': {}, 'tools': {},
                 'workflow': prompt_text('tasks.orchestrate.workflow'),
                 'limits': prompt_text('tasks.orchestrate.limits'),
@@ -81,8 +81,18 @@ class AgentTasks:
                 raise ValueError('后台同构体不能冒充原用户追加输入')
             message = getattr(event, 'message_obj', None)
             identity = getattr(message, 'message_id', None)
+            target = args.get('task_id', '')
+            decisions = getattr(self.app, 'decisions', None)
+            if decisions is not None:
+                from ..persistence.inbox import input_id
+                incoming = input_id(event.unified_msg_origin, str(event.get_sender_id()), str(identity or ''))
+                if not decisions.inbox.get(incoming):
+                    self.app.inbox.event(session=event.unified_msg_origin, sender=str(event.get_sender_id()),
+                                         external_id=str(identity or ''), source='platform', route='task',
+                                         text=event.get_message_str())
+                target = decisions.append_target(incoming, target, event.unified_msg_origin, str(event.get_sender_id()))
             return self.task_inputs.append(
-                args.get('task_id', ''), event.unified_msg_origin, str(event.get_sender_id()),
+                target, event.unified_msg_origin, str(event.get_sender_id()),
                 str(identity) if identity is not None else '', args.get('text', ''))
         if action == 'list':
             return [r for r in self.list() if r['session'] == event.unified_msg_origin

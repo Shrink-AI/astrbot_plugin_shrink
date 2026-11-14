@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import growth, media, memory, operations, people, prompts, runs, skills, system, teach
+from . import decisions, growth, media, memory, operations, people, prompts, runs, skills, system, teach
 from .auth import install_auth
 
 
@@ -29,7 +29,7 @@ def create_app(
             allowed_hosts = allowed_hosts | {parsed.netloc}
             origins.add(parsed.scheme + "://" + parsed.netloc)
     app = FastAPI(title="石英", docs_url=None, redoc_url=None, openapi_url=None)
-    install_auth(app, application.state, application.sessions, allowed_hosts, origins)
+    install_auth(app, application.state, application.sessions, allowed_hosts, origins, application.inbox)
     app.include_router(
         system.router_for(
             application.state, application.status, application.learning, providers,
@@ -45,6 +45,7 @@ def create_app(
     app.include_router(memory.router_for(application))
     app.include_router(people.router_for(application))
     app.include_router(runs.router_for(application))
+    app.include_router(decisions.router_for(application.decisions))
     app.include_router(teach.router_for(application))
     app.include_router(skills.router_for(application))
     app.include_router(prompts.router_for(application))

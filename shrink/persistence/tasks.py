@@ -124,10 +124,25 @@ class Tasks:
         with self.transaction() as con:
             attempt = con.execute("SELECT id FROM task_attempts WHERE task_id=? "
                                   "ORDER BY rowid DESC LIMIT 1", (task_id,)).fetchone()
-            con.execute("INSERT INTO operation_events(task_id,action,plugin,path,result,created,attempt_id)"
-                        " VALUES(?,?,?,?,?,?,?)",
-                        (task_id, action, plugin, path, str(result)[:40000], time.time(),
-                         attempt[0] if attempt else ""))
+            cursor = con.execute("INSERT INTO operation_events(task_id,action,plugin,path,result,created,attempt_id)"
+                                 " VALUES(?,?,?,?,?,?,?)",
+                                 (task_id, action, plugin, path, str(result)[:40000], time.time(),
+                                  attempt[0] if attempt else ""))
+            if con.execute("SELECT 1 FROM sqlite_master WHERE name='input_events'").fetchone():
+                from .inbox import input_id
+                task = con.execute("SELECT session,sender FROM operation_tasks WHERE id=?", (task_id,)).fetchone()
+                if task:
+                    external = f"task-event:{cursor.lastrowid}"
+                    identity = input_id(task["session"], task["sender"], external, "task")
+                    now = time.time()
+                    con.execute("INSERT INTO messages(id,user_id,source,text,learnable,learned,created)"
+                                " VALUES(?,?,?,?,0,1,?)",
+                                (external, task["sender"], task["session"],
+                                 json.dumps({"action": action, "result": result}, ensure_ascii=False), now))
+                    con.execute("INSERT INTO input_events"
+                                "(id,external_id,source,sender,session,message_id,route,received,claimed,processed)"
+                                " VALUES(?,?,?,?,?,?,'task_event',?,?,?)",
+                                (identity, external, "task", task["sender"], task["session"], external, now, now, now))
 
     def attempts(self, task_id):
         return self.db.rows("SELECT * FROM task_attempts WHERE task_id=? ORDER BY rowid", (task_id,))

@@ -84,7 +84,7 @@ class Outbound:
         if not source or not delivery_id:
             return False
         from ..persistence.outbound import record_delivery
-        return record_delivery(self.app, source, text, delivery_id)
+        return record_delivery(self.app, {**source, "session": (scope or {}).get("session", "")}, text, delivery_id)
 
 
 class EmptyComposition(ValueError):

@@ -20,6 +20,7 @@ import { PeoplePage } from '@/pages/PeoplePage';
 import { PersonaPage } from '@/pages/PersonaPage';
 import { PromptsPage } from '@/pages/PromptsPage';
 import { RunsPage } from '@/pages/RunsPage';
+import { DecisionsPage } from '@/pages/DecisionsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 import { SkillsPage } from '@/pages/SkillsPage';
 import { TeachPage } from '@/pages/TeachPage';
@@ -47,6 +48,7 @@ const sections = [
   ] },
   { title: '后台', pages: [
     { key: 'runs', name: '整理记录', icon: History, view: RunsPage },
+    { key: 'decisions', name: '决策记录', icon: Lightbulb, view: DecisionsPage },
     { key: 'maintenance', name: '夜间能力维护', icon: History, view: MaintenancePage },
     { key: 'operations', name: '开发任务', icon: Wrench, view: OperationsPage },
     { key: 'devices', name: '电脑与 Agent', icon: Wrench, view: DevicesPage },

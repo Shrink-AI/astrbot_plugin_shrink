@@ -101,6 +101,9 @@ class Event:
     def get_result(self):
         return self.result
 
+    def set_result(self, result):
+        self.result = result
+
     async def send(self, chain):
         self.world.sent.append("".join(getattr(c, "text", "") for c in chain.chain))
 
@@ -110,6 +113,7 @@ class World:
         self.sent, self.ran, self.cancelled, self.calls = [], [], [], []
         self.gates, self.model_gate, self.replies = {}, None, {}
         self.hook_errors = []
+        self.requests = []
 
         async def model(prompt, system="", images=None):
             return "好的，先停下。" if "已停止" in prompt else "整理过的结果"
@@ -160,11 +164,18 @@ class World:
 
     async def text_chat(self, **payload):
         prompt = ""
-        for message in payload["contexts"]:
+        self.requests.append({"tools": [t.name for t in getattr(payload.get("func_tool"), "tools", [])],
+                              "contexts": [m.model_dump(exclude_none=True) for m in payload["contexts"]],
+                              "system_prompt": payload.get("system_prompt", "")})
+        for message in reversed(payload["contexts"]):
             if getattr(message, "role", "") == "user":
                 content = message.content
                 prompt = content if isinstance(content, str) else "".join(
                     getattr(part, "text", "") for part in content)
+                if prompt.startswith("[本轮参考资料"):
+                    continue
+                if prompt.startswith("[发言人 "):
+                    prompt = prompt.split("\n", 1)[-1]
                 break
         self.calls.append(prompt)
         if self.model_gate is not None:
@@ -180,7 +191,7 @@ class World:
     async def turn(self, event):
         adapter = self.adapter
         await self.hook(adapter.receive(event))
-        if event.stopped or not event.get_extra("shrink_reply"):
+        if event.is_stopped() or not event.get_extra("shrink_reply"):
             return
         capture = follow_up.try_capture_follow_up(event)
         consumed = activated = False
@@ -199,7 +210,7 @@ class World:
                         name=n, description=n, parameters={"type": "object", "properties": {}},
                         handler=None) for n in names]))
                 await self.hook(adapter.enrich(event, request))
-                if event.stopped:
+                if event.is_stopped():
                     return
                 event.set_extra("offered_tools", request.func_tool.names())
                 world = self
@@ -207,7 +218,7 @@ class World:
                 class Hooks(BaseAgentRunHooks):
                     async def on_tool_start(self, run_context, tool, tool_args):
                         async def call():
-                            adapter.tool_started(event, tool)
+                            adapter.tool_started(event, tool, tool_args)
                         await world.hook(call())
 
                     async def on_tool_end(self, run_context, tool, tool_args, tool_result):
@@ -230,10 +241,10 @@ class World:
                         aborted = aborted or response.type == "aborted"
                     final = runner.get_final_llm_resp()
                     text = "" if aborted or final is None else final.completion_text or ""
-                    event.result = MessageEventResult(chain=[Plain(text)] if text else [])
+                    event.set_result(MessageEventResult(chain=[Plain(text)] if text else []))
                     await self.hook(adapter.decorate(event))
-                    if event.result.chain:
-                        self.sent.append("".join(c.text for c in event.result.chain))
+                    if event.get_result().chain:
+                        await event.send(event.get_result())
                         await self.hook(adapter.sent(event))
                 finally:
                     follow_up.unregister_active_runner(event.unified_msg_origin, runner)
@@ -310,6 +321,7 @@ async def test_newer_message_withdraws_a_reply_still_being_written(world):
     """C10 without the stop: the old reply is generated, dropped, and nothing late arrives."""
     world.model_gate = asyncio.Event()
     old, new = Event(world, "帮我想个名字"), Event(world, "要两个字的")
+    world.replies["要两个字的"] = ["回复：帮我想个名字 要两个字的"]
     one = asyncio.create_task(world.turn(old))
     await until(lambda: world.calls)
     two = asyncio.create_task(world.turn(new))
@@ -317,6 +329,9 @@ async def test_newer_message_withdraws_a_reply_still_being_written(world):
     world.model_gate.set()
     await asyncio.wait_for(asyncio.gather(one, two), 10)
     assert world.sent == ["回复：帮我想个名字 要两个字的"]
+    rendered = str(world.requests[-1]["contexts"])
+    assert rendered.count("帮我想个名字") == 1 and rendered.count("要两个字的") >= 1
+    assert not world.app.inbox.repository.pending("chat")
     await asyncio.sleep(0)
     traces = world.traces()
     assert traces[old.message_obj.message_id]["outcome"] == "superseded"
@@ -329,6 +344,7 @@ async def test_cooperative_stop_ends_a_superseded_run_and_leaks_nothing(world):
     world.cooperative()
     world.model_gate = asyncio.Event()
     old, new = Event(world, "帮我想个名字"), Event(world, "要两个字的")
+    world.replies["要两个字的"] = ["回复：帮我想个名字 要两个字的"]
     one = asyncio.create_task(world.turn(old))
     await until(lambda: world.calls)
     two = asyncio.create_task(world.turn(new))
@@ -339,6 +355,8 @@ async def test_cooperative_stop_ends_a_superseded_run_and_leaks_nothing(world):
     await asyncio.wait_for(two, 10)
     assert world.sent == ["回复：帮我想个名字 要两个字的"]
     assert not any("stopped" in text.lower() for text in world.sent)
+    assert "帮我想个名字" in str(world.requests[-1]["contexts"])
+    assert not world.app.inbox.repository.pending("chat")
     await asyncio.sleep(0)
     assert world.traces()[old.message_obj.message_id]["outcome"] == "superseded"
     assert not follow_up._ACTIVE_AGENT_RUNNERS and not world.adapter.debouncer.replies

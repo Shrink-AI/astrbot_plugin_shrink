@@ -1,0 +1,12 @@
+{
+  "haiku": {
+    "synthetic-1": {"intent":"query","route":"reply","conversation":"room","topic":null,"task":null,"evidence":["synthetic-1"],"capability_candidates":["weather"],"notify":"normal","confidence":0.8},
+    "synthetic-2": {"intent":"chat","route":"silent","conversation":"room","topic":null,"task":null,"evidence":["synthetic-2"],"capability_candidates":[],"notify":"silent","confidence":0.7},
+    "synthetic-3": {"intent":"supplement","route":"attach_task","conversation":"room","topic":null,"task":"task1","evidence":["synthetic-3","task1"],"capability_candidates":["shrink_orchestrate"],"notify":"merge","confidence":0.8}
+  },
+  "laya": {
+    "synthetic-1": {"intent":"query","route":"reply","conversation":"room","topic":null,"task":null,"evidence":["synthetic-1"],"capability_candidates":["weather"],"notify":"normal","confidence":0.9},
+    "synthetic-2": {"intent":"chat","route":"silent","conversation":"room","topic":null,"task":null,"evidence":["synthetic-2"],"capability_candidates":[],"notify":"silent","confidence":0.6},
+    "synthetic-3": {"intent":"supplement","route":"ask","conversation":"room","topic":null,"task":null,"evidence":["synthetic-3"],"capability_candidates":[],"notify":"action","confidence":0.55}
+  }
+}

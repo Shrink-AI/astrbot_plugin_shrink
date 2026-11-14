@@ -61,12 +61,13 @@ class RecentInteractions:
         self.messages = messages
 
     def find(self, user_id, source, text, *, name="", request=None, now=None,
-             lines=None, budget=None):
+             lines=None, budget=None, decision=None):
         """Pick the records that bear on `text`. `request` is what the person actually wrote;
         only that can widen the search or open their private chat, never a model's paraphrase."""
         now = now or time.time()
         request = text if request is None else request
-        asked = bool(ASKED.search(request or ""))
+        asked = (bool(decision["decision"]["topic"]) if decision and not decision["fallback"]
+                 else bool(ASKED.search(request or "")))
         private_ok = is_private(source) or bool(PRIVATE.search(request or ""))
         since = now - (ASKED_SECONDS if asked else AUTO_SECONDS)
         rows = self.messages.elsewhere(user_id, source, since, SCAN, include_private=private_ok)

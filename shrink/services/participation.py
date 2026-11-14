@@ -53,6 +53,12 @@ class Participation:
         queue.append(now)
         return True
 
+    @staticmethod
+    def reviewed(reason, decision):
+        if decision["decision"]["route"] == "silent":
+            return "quiet"
+        return reason if reason in {"direct", "engaged", "spontaneous"} else "spontaneous"
+
     def decide(self, turn, random_value):
         now = time.time()
         self.other_conversations = {

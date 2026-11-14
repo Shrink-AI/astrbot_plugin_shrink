@@ -1,6 +1,12 @@
 export interface Settings {
   model_provider: string;
   embedding_provider: string;
+  decision_backend: 'haiku' | 'laya';
+  decision_provider: string;
+  decision_timeout: number;
+  decision_capability_limit: number;
+  decision_laya_endpoint: string;
+  decision_laya_version: string;
   persona_id: string;
   spontaneous_probability: number;
   spontaneous_limit: number;
@@ -29,6 +35,19 @@ export interface Settings {
   engaged_seconds: number;
   skills_enabled: boolean;
   sandbox_url: string;
+}
+export interface DecisionRecord {
+  id: number; input_id: string; created: number; backend: string; version: string;
+  candidates: Record<string, unknown[]>; fallback: boolean; reason: string;
+  elapsed: number; rule_direct: boolean; confidence_kind: string;
+  decision: {
+    intent: string; route: string; conversation: string; topic: string | null; task: string | null;
+    evidence: string[]; capability_candidates: string[]; notify: string; confidence: number;
+  };
+}
+export interface DecisionRecords {
+  records: DecisionRecord[];
+  stats: { total: number; direct: number; rule_direct_ratio: number };
 }
 export interface Providers { chat: string[]; embedding: string[] }
 export interface Configuration { settings: Settings; providers: Providers }

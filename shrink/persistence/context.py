@@ -10,6 +10,14 @@ class DigestRepository:
         self.database = database
         self.resolve = lambda rows: rows
 
+    def current(self, rows):
+        if not self.database.rows("SELECT 1 FROM sqlite_master WHERE name='conversation_events'"):
+            return self.resolve(rows)
+        return self.resolve([row for row in rows if not self.database.rows(
+            "SELECT 1 FROM conversation_events e JOIN messages m ON m.id=e.target "
+            "WHERE m.source=? AND m.created>=? AND m.created<=? LIMIT 1",
+            (row["source"], row["start"], row["end"]))])
+
     def add(self, source, start, end, count, summary, run_id=None):
         with self.database.transaction() as connection:
             cursor = connection.execute(
@@ -21,7 +29,7 @@ class DigestRepository:
 
     def before(self, source, end, limit=2):
         """The newest summaries that end before the verbatim window starts."""
-        return self.resolve(self.database.rows(
+        return self.current(self.database.rows(
             "SELECT * FROM digests WHERE source=? AND end<=? ORDER BY end DESC LIMIT ?",
             (source, end, limit),
         ))
@@ -32,7 +40,7 @@ class DigestRepository:
             "SELECT * FROM digests WHERE source=? AND end>=? ORDER BY end DESC LIMIT ?",
             (source, since, limit),
         )
-        return self.resolve(list(reversed(rows)))
+        return self.current(list(reversed(rows)))
 
     def search(self, grams, exclude=(), limit=2, source=None):
         terms = [g for g in grams if len(g) >= 3][:20]
@@ -44,7 +52,7 @@ class DigestRepository:
             "AND (? IS NULL OR d.source=?) ORDER BY rank LIMIT ?",
             (query, source, source, limit + len(exclude)),
         )
-        return self.resolve([r for r in rows if r["id"] not in set(exclude)][:limit])
+        return self.current([r for r in rows if r["id"] not in set(exclude)][:limit])
 
     def recent(self, source="", limit=30, offset=0):
         return self.database.rows(

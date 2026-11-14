@@ -31,8 +31,9 @@ from ..services.skills import tool_step
 from ..services.debounce import Debouncer
 from ..services.task_context import CURRENT_TASK
 from ..services.task_reporting import execution_report
-from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup
+from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup, is_revocation
 from ..services.turn_trace import TurnTrace
+from ..services.decisions import DecisionContext, guidance as decision_guidance
 from ..persistence.turn_traces import TurnTraceRepository
 from .foreground import active_runner, release_follow_ups, request_stop, restrict
 from .notifications import Notifications
@@ -56,7 +57,7 @@ class QQSticker(BaseMessageComponent):
 
 
 class ConversationAdapter:
-    def __init__(self, app, plugin_module, umos=None, host_quotes=None, router_prompt=None):
+    def __init__(self, app, plugin_module, umos=None, host_quotes=None, router_prompt=None, catalog=None):
         self.app = app
         self.plugin_module = plugin_module
         self.umos = umos if umos is not None else {}
@@ -64,6 +65,7 @@ class ConversationAdapter:
         self.host_quotes = host_quotes or (lambda umo: False)
         # The host's instruction to delegate through handoff tools the foreground no longer has.
         self.router_prompt = router_prompt or (lambda: "")
+        self.decision_catalog = catalog or (lambda: [])
         self.debouncer = Debouncer()
         self.notifications = Notifications(app)
         self.traces = getattr(app, "turn_traces", None) or TurnTraceRepository(app.database)
@@ -119,43 +121,103 @@ class ConversationAdapter:
             return
         # Other command handlers retain ownership; slash commands are never learned.
         handlers = event.get_extra("activated_handlers", [])
-        if any(
+        handled_elsewhere = any(
             any(
                 type(f).__name__ in {"CommandFilter", "CommandGroupFilter", "RegexFilter"}
                 for f in h.event_filters
             )
             for h in handlers
             if h.handler_module_path != self.plugin_module
-        ):
-            return
+        )
         raw = str(getattr(event.message_obj, "message_str", event.get_message_str()))
-        if raw.lstrip().startswith(("/", "!", "！")):
-            return
+        handled_elsewhere = handled_elsewhere or raw.lstrip().startswith(("/", "!", "！"))
         platform = event.get_platform_name()
         platform = "qq" if platform in {"aiocqhttp", "qq_official"} else platform
         account = str(event.get_sender_id())
         uid = f"{platform}:{account}"
         group = str(event.get_group_id() or "")
         source = f"{platform}:group:{group}" if group else f"{platform}:private:{account}"
+        notice = getattr(event.message_obj, "raw_message", None)
+        if isinstance(notice, dict) and notice.get("notice_type") in {"group_recall", "friend_recall"}:
+            target = f"{platform}:{event.get_platform_id()}:{source}:{notice['message_id']}"
+            session = str(event.unified_msg_origin)
+            incoming, fresh = app.inbox.event(
+                session=session, sender=account, external_id="recall:" + target,
+                source="platform", route="revision", text="撤回消息 " + target)
+            if fresh and app.messages.get_many([target]):
+                app.history.revise(session, target, sender=uid, identity=incoming["id"])
+                app.inbox.repository.complete_message(target)
+            app.inbox.repository.complete([incoming["id"]])
+            event.stop_event()
+            return
         raw_id = str(event.message_obj.message_id or "")
         if not raw_id:
             raw_id = hashlib.sha256(
                 f"{uid}:{source}:{getattr(event.message_obj, 'timestamp', '')}:{raw}".encode()
             ).hexdigest()
+        if handled_elsewhere:
+            app.inbox.exclude(session=str(event.unified_msg_origin), sender=account, external_id=raw_id)
+            return
         message_id = f"{platform}:{event.get_platform_id()}:{source}:{raw_id}"
         turn = self.build_turn(event, platform, uid, source, group, message_id)
         person = app.people_repository.get(uid)
         turn.speaker_bot = bool(person and person["kind"] == "bot")
         turn.addressee, turn.addressee_name = address(turn, app.people.address_book(source))
-        if not app.messages.ingest(turn.record()):
-            event.call_llm = True
-            return
+        session = turn.umo or turn.source
+        app.history.repository.session(
+            session, instance=str(event.get_platform_id()), platform=platform,
+            kind="private" if turn.private else "group", external_id=account if turn.private else group,
+            source=source)
+        correction = re.match(r"^(?:更正|纠正|改为|改成)[：:，, ]*(.+)", turn.text, re.S)
+        target = f"{platform}:{event.get_platform_id()}:{source}:{turn.reply_to}" if turn.reply_to else ""
+        original = app.messages.get_many([target]) if correction and target else []
+        correcting = bool(original and original[0]["user_id"] == uid)
+        restored = event.get_extra("shrink_recovered_input")
+        if restored:
+            saved = app.inbox.repository.get(restored)
+            if not saved or saved["processed"] is not None:
+                event.call_llm = True
+                return
+            turn.id, turn.text = saved["message_id"], saved["text"]
+        else:
+            saved, fresh = app.inbox.receive(
+                turn.record(),
+                session=session, sender=account, external_id=raw_id,
+                route="chat",
+                source="timer" if event.get_platform_name() == "cron" else "platform",
+                conversational=not correcting,
+                metadata={"platform": platform, "instance": str(event.get_platform_id()),
+                          "group": group, "name": turn.name, "private": turn.private,
+                          "admin": event.is_admin(), "wake": turn.wake, "source": source,
+                          "self_id": str(event.get_self_id())})
+            if not fresh:
+                event.set_extra("shrink_reply", False)
+                event.call_llm = True
+                return
+        if correcting and not restored:
+            app.history.revise(session, target, sender=uid, identity=saved["id"],
+                               text=turn.text, message_ref=saved["message_id"])
+        event.set_extra("shrink_input_id", saved["id"])
+        event.set_extra("shrink_input_ids", [saved["id"]])
         if turn.umo:
             self.umos[source] = turn.umo
         app.attachments.capture(turn, list(event.get_messages()))
         event.set_extra("shrink_turn", turn)
-        if event.is_admin() and is_stop_request(turn.text) and (turn.private or turn.addressee == SELF or turn.wake):
+        trace = TurnTrace(turn.id, turn.umo, turn.source, turn.user_id, "")
+        trace.begin = trace.mark = arrived
+        trace.enter("decision")
+        event.set_extra("shrink_trace", trace)
+        prior = [entry for entry in self.active_turns.get((session, turn.user_id), []) if not entry[1].done()]
+        self.arm_watchdog(event)
+        reason = app.participation.decide(turn, random.random())
+        decision = await app.decisions.decide(saved["id"], DecisionContext(
+            private=turn.private, direct=turn.addressee == SELF or (turn.wake and not turn.addressee),
+            admin=event.is_admin(), participation=reason, foreground=bool(prior)), self.decision_catalog())
+        trace.enter("debounce")
+        event.set_extra("shrink_decision", decision)
+        if decision["decision"]["route"] == "stop":
             await self.stop_requested(event, turn)
+            self.close_trace(event, "stopped")
             return
         cfg = app.state.settings
         if cfg.collect_enabled and group in cfg.collect_groups:
@@ -163,9 +225,10 @@ class ConversationAdapter:
                 if isinstance(comp, Image) and app.memes.pending < 8:
                     app.memes.pending += 1
                     app.tasks.spawn(self.collect_image(comp, source))
-        turn.reason = app.participation.decide(turn, random.random())
+        turn.reason = app.participation.reviewed(reason, decision)
+        trace.reason = turn.reason
         burst_key = (turn.umo or turn.source, turn.user_id)
-        if cfg.debounce_enabled and turn.addressee in ("", SELF) and (
+        if not restored and cfg.debounce_enabled and turn.addressee in ("", SELF) and (
             turn.reason in REPLY_REASONS or burst_key in self.debouncer.pending
         ):
             burst = await self.debouncer.collect(
@@ -173,6 +236,7 @@ class ConversationAdapter:
                 quiet=cfg.debounce_seconds, maximum=cfg.debounce_max_seconds,
             )
             if burst is None:
+                self.close_trace(event, "debounced")
                 event.stop_event()
                 return
             turn.text = "\n".join(burst.texts)
@@ -185,22 +249,23 @@ class ConversationAdapter:
             ]
             event.set_extra("shrink_merged_messages", len(burst.texts))
         if turn.reason in REPLY_REASONS:
-            running = list(self.active_turns.get(burst_key, []))
+            pending = app.inbox.repository.pending("chat", session, account)
+            event.set_extra("shrink_input_ids", [r["id"] for r in pending if r["claimed"] is None
+                                                or r["id"] == saved["id"]])
+        if turn.reason in REPLY_REASONS:
+            running = [entry for entry in self.active_turns.get(burst_key, []) if entry[0] is not event]
             reply = self.debouncer.begin(burst_key, turn.text, turn.reason)
             if reply.text != turn.text:
                 # An older reply to this sender was still being written; this turn answers both.
-                own = turn.text
                 turn.text, turn.reason = reply.text, reply.reason
-                if running:
-                    # The host offers this message to the older run as a follow-up. That run has
-                    # already read its own message, so hand over only the new words; the merged
-                    # text is applied in enrich if this message becomes a turn of its own.
-                    event.set_extra("shrink_own_text", own)
-                else:
-                    event.message_str = turn.text
-                    event.message_obj.message_str = turn.text
                 logger.info(f"Shrink merged in-flight reply source={source}")
+            if running:
+                event.set_extra("shrink_followup_owner", running[-1][0])
             for previous, _ in running:
+                if self.withdrawn(previous):
+                    event.set_extra("shrink_input_ids", list(dict.fromkeys(
+                        (previous.get_extra("shrink_input_ids") or []) +
+                        (event.get_extra("shrink_input_ids") or []))))
                 self.bind_runner(previous)
                 if cfg.cooperative_stop and self.withdrawn(previous) and request_stop(previous):
                     # The older run would only produce a reply that is dropped; end it now so
@@ -219,7 +284,10 @@ class ConversationAdapter:
             event.set_extra("selected_provider", cfg.model_provider)
             event.set_extra("shrink_reply", True)
         else:
+            self.close_trace(event, "silent")
             logger.debug(f"Shrink silent: {turn.reason} source={source}")
+            if not decision["fallback"]:
+                app.inbox.repository.complete([saved["id"]], route="chat")
             event.call_llm = True
 
     async def collect_image(self, comp, source):
@@ -238,6 +306,8 @@ class ConversationAdapter:
     async def stop_requested(self, event, turn):
         key = (turn.umo or turn.source, turn.user_id)
         for previous, task in list(self.active_turns.get(key, [])):
+            if previous is event:
+                continue
             previous.set_extra("shrink_cancelled", True)
             self.disarm_watchdog(previous)
             if not (self.app.state.settings.cooperative_stop and request_stop(previous)):
@@ -246,12 +316,25 @@ class ConversationAdapter:
                 task.cancel()
         self.debouncer.pending.pop(key, None)
         self.debouncer.replies.pop(key, None)
-        cancelled = await self.app.operations.cancel_owned(event)
+        decision = event.get_extra("shrink_decision")
+        target = decision["decision"]["task"] if decision else None
+        if target:
+            self.app.operations.owned_task(event, target)
+            cancelled = [await self.app.operations.cancel(target)]
+        elif not decision or decision["reason"] == "revocation":
+            cancelled = await self.app.operations.cancel_owned(event)
+        else:
+            cancelled = []
         await self.notifications.send_once(
             event, turn.id + ":stop",
             {"status": "cancelled", "cancelled_tasks": len(cancelled),
              "fact": "已停止当前会话中你交办的运行任务；保留执行记录，不再自动续做。"},
             request=turn.text, kind="cancelled")
+        if getattr(self.app, "inbox", None):
+            self.app.inbox.repository.complete(
+                [r["id"] for r in self.app.inbox.repository.pending("chat", turn.umo or turn.source,
+                                                                  str(event.get_sender_id()))],
+                route="chat")
         event.stop_event()
 
     # ---- turn lifecycle --------------------------------------------------------------------------
@@ -262,8 +345,7 @@ class ConversationAdapter:
         older run, cancelled, failed). Cleanup therefore hangs on the task itself; it compares
         by identity, so an old event never clears a newer one's record.
         """
-        trace = TurnTrace(turn.id, turn.umo, turn.source, turn.user_id, turn.reason)
-        trace.begin = trace.mark = arrived
+        trace = event.get_extra("shrink_trace") or TurnTrace(turn.id, turn.umo, turn.source, turn.user_id, turn.reason)
         trace.enter("follow_up")
         event.set_extra("shrink_trace", trace)
         task = asyncio.current_task()
@@ -277,6 +359,15 @@ class ConversationAdapter:
                 # A run that died mid-step leaves queued follow-ups waiting forever.
                 release_follow_ups(runner)
             consumed = event.get_extra("_follow_up_captured")
+            if consumed and getattr(self.app, "inbox", None):
+                identities = event.get_extra("shrink_input_ids") or []
+                owner = event.get_extra("shrink_followup_owner")
+                if owner and owner.get_extra("shrink_final_response"):
+                    self.app.inbox.repository.complete(identities, route="chat")
+                elif owner:
+                    owner.set_extra("shrink_input_ids", list(dict.fromkeys(
+                        (owner.get_extra("shrink_input_ids") or []) + identities)))
+                    self.app.inbox.repository.claim(identities)
             self.close_trace(event, "follow_up" if consumed else "ended")
         task.add_done_callback(finished)
 
@@ -335,7 +426,7 @@ class ConversationAdapter:
             event.stop_event()
         return bool(outcome)
 
-    def tool_started(self, event, tool):
+    def tool_started(self, event, tool, args=None):
         """Record that a tool is about to run. Synchronous: it must precede any wait, because a
         tool that has started may have side effects whether or not its result ever arrives."""
         if CURRENT_TASK.get() or not event.get_extra("shrink_reply"):
@@ -346,6 +437,11 @@ class ConversationAdapter:
             started = []
             event.set_extra("shrink_started_tools", started)
         started.append(name)
+        if getattr(self.app, "history", None):
+            trace = event.get_extra("shrink_trace")
+            identity = f"{trace.run_id if trace else event.get_extra('shrink_turn').id}:{len(started)}"
+            event.set_extra("shrink_tool_call_id", identity)
+            self.app.history.tool_start(event.unified_msg_origin, identity, name, args or {})
         reply = self.inflight(event)
         if reply is not None and name not in CHAT_TOOLS:
             # Work has begun on the user's behalf; its result must be reported, not withdrawn.
@@ -371,11 +467,27 @@ class ConversationAdapter:
             raise
 
     async def prepare(self, event, req):
+        cron = event.get_extra("cron_job")
+        if cron and not event.get_extra("shrink_timer_input"):
+            payload = event.get_extra("cron_payload") or {}
+            incoming, fresh = self.app.inbox.event(
+                session=str(event.unified_msg_origin),
+                sender=str(payload.get("sender_id") or "scheduler"),
+                external_id=f"timer:{cron['id']}:{cron['run_started_at']}", source="timer", route="timer",
+                text=event.get_message_str(), metadata={"job_id": cron["id"]})
+            event.set_extra("shrink_timer_input", incoming["id"])
+            if not fresh and incoming["processed"] is not None:
+                event.stop_event()
+                return
+            self.app.inbox.repository.claim([incoming["id"]])
         turn = event.get_extra("shrink_turn")
         if not turn or not event.get_extra("shrink_reply"):
             return
         app = self.app
         self.enter(event, "context")
+        if getattr(app, "history", None) and app.history.repository.revised(turn.id):
+            event.stop_event()
+            return
         if self.abandon(event):
             # Stopping here makes the host leave before it registers a runner.
             return
@@ -383,7 +495,18 @@ class ConversationAdapter:
         if removed:
             logger.debug(f"Shrink foreground tools withheld: {','.join(removed)}")
         self.arm_watchdog(event)
-        window = app.context.window(turn, recent_only=is_task_followup(turn.text))
+        decision = event.get_extra("shrink_decision")
+        catalog = [{"name": t.name, "description": t.description or ""}
+                   for t in getattr(getattr(req, "func_tool", None), "tools", []) if getattr(t, "active", True)]
+        if decision:
+            app.decisions.select_capabilities(decision, turn.text, catalog)
+            if decision["reason"] in {"stop_ambiguous", "stop_permission"}:
+                for tool in list(getattr(getattr(req, "func_tool", None), "tools", [])):
+                    req.func_tool.remove_tool(tool.name)
+        window = app.context.window(turn, same_source_only=True, recent_only=is_task_followup(turn.text, decision))
+        session = turn.umo or turn.source
+        identities = event.get_extra("shrink_input_ids") or []
+        app.inbox.repository.claim(identities)
         mentioned = [
             u for u in dict.fromkeys(
                 [m["id"] for m in turn.mentions if m["id"] != SELF]
@@ -423,7 +546,7 @@ class ConversationAdapter:
             people="\n".join(c for c in cards if c),
             memories=memories,
             lessons=app.memory.lessons(),
-            chat=window.text,
+            chat="",
             expressions=examples,
             recent="\n".join("- " + r for r in recent),
             speaker=turn.name,
@@ -438,17 +561,35 @@ class ConversationAdapter:
             req.system_prompt = (req.system_prompt or "") + "\n" + persona_prompt(
                 app.persona_repository.learned_persona()
             )
-        req.system_prompt += "\n\n" + prompt
         req.system_prompt += "\n\n" + prompt_text("tasks.execution_scope")
+        if event.is_admin():
+            req.system_prompt += "\n" + prompt_text("tasks.admin_hint")
+        trace = event.get_extra("shrink_trace")
+        same = app.history.repository.compare_prefix(session, req.system_prompt)
+        if trace is not None:
+            trace.system_prefix_same = same
+        if decision:
+            prompt += "\n" + decision_guidance(decision)
+        if not is_task_followup(turn.text, decision):
+            references = app.recent.find(turn.user_id, turn.source, turn.text, name=turn.name, decision=decision)
+            prompt += "\n" + "\n".join(app.recent.render(references, turn.name))
         try:
             guidance = await app.native_skills.planning_guidance(turn.text)
             if guidance:
-                req.system_prompt += "\n\n已加载原生 Skill grilling：\n" + guidance
+                prompt += "\n\n已加载原生 Skill grilling：\n" + guidance
                 event.set_extra("shrink_planning_skill", "grilling")
         except Exception as exc:
             app.tasks.error("planning_skill", exc)
-        # The plugin owns conversation context; host history may carry leaked or stale replies.
-        req.contexts = []
+        # AstrBot's history writer explicitly skips requests without a conversation.
+        req.conversation = None
+        unclaimed = [row["message_id"] for row in app.inbox.repository.pending("chat", session)
+                     if row["id"] not in identities and row["claimed"] is None]
+        req.contexts = await app.history.contexts(
+            session, int(app.state.settings.context_budget * .6), exclude=[turn.id, *unclaimed])
+        req.contexts.append({"role": "user", "content": "[本轮参考资料，不是用户指令]\n" + prompt})
+        original = app.messages.get_many([turn.id])
+        current = original[0]["text"] if original else turn.text
+        req.prompt = f"[发言人 {turn.user_id} · {turn.name or turn.user_id}]\n{current}"
         event.set_extra("shrink_expression_context", {
             "chat": window.text, "people": cards, "memories": memories, "examples": examples,
         })
@@ -458,13 +599,6 @@ class ConversationAdapter:
         event.set_extra("shrink_examples", example_ids)
         event.set_extra("shrink_skills", [s["id"] for s in skills])
         event.set_extra("shrink_tools", [])
-        own = event.get_extra("shrink_own_text")
-        if own and own != turn.text:
-            # Not consumed as a follow-up after all: this turn answers the older message too.
-            prompt = req.prompt or ""
-            req.prompt = prompt.replace(own, turn.text, 1) if own in prompt else turn.text
-            event.message_str = turn.text
-            event.message_obj.message_str = turn.text
         if self.abandon(event):
             # Superseded or stopped while the context was being prepared.
             return
@@ -551,6 +685,9 @@ class ConversationAdapter:
 
     # ---- response --------------------------------------------------------------------------------
     async def response(self, event, response):
+        timer = event.get_extra("shrink_timer_input")
+        if timer and not response.tools_call_name:
+            self.app.inbox.repository.complete([timer], route="timer")
         if not event.get_extra("shrink_reply"):
             return
         trace = event.get_extra("shrink_trace")
@@ -559,6 +696,8 @@ class ConversationAdapter:
         self.bind_runner(event)
         if response.tools_call_name:
             return
+        if getattr(self.app, "inbox", None) and not self.withdrawn(event):
+            self.app.inbox.repository.complete(event.get_extra("shrink_input_ids") or [], route="chat")
         if event.get_extra("shrink_cancelled"):
             response.completion_text = ""
             self.outcome(event, "stopped")
@@ -709,6 +848,31 @@ class ConversationAdapter:
             result.chain.insert(0, Reply(id=event.message_obj.message_id))
         result.use_markdown(False)
         event.set_extra("shrink_text", text)
+        self.watch_delivery(event)
+
+    @staticmethod
+    def watch_delivery(event):
+        if event.get_extra("shrink_observing_delivery"):
+            return
+        event.set_extra("shrink_observing_delivery", True)
+        original = event.send
+
+        async def send(chain):
+            previous = getattr(event, "_has_send_oper", None)
+            if previous is not None:
+                event._has_send_oper = False
+            try:
+                result = await original(chain)
+                accepted = result is not False and (previous is None or event._has_send_oper)
+            finally:
+                if previous is not None:
+                    event._has_send_oper = previous or event._has_send_oper
+            if accepted:
+                accepted = event.get_extra("shrink_accepted_texts", [])
+                accepted.append("".join(c.text for c in chain.chain if isinstance(c, Plain)))
+                event.set_extra("shrink_accepted_texts", accepted)
+            return result
+        event.send = send
 
     @staticmethod
     def did_work(event):
@@ -736,13 +900,22 @@ class ConversationAdapter:
     async def sent(self, event):
         if not event.get_extra("shrink_reply") or event.get_extra("shrink_sent"):
             return
+        text = event.get_extra("shrink_text", "")
+        if getattr(self.app, "history", None) and text not in event.get_extra("shrink_accepted_texts", []):
+            self.close_trace(event, "send_unknown")
+            self.release(event)
+            return
         event.set_extra("shrink_sent", True)
         self.close_trace(event, "sent")
         self.release(event)
         app, turn = self.app, event.get_extra("shrink_turn")
         text = event.get_extra("shrink_text", "")
         if turn and text:
-            app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
+            if getattr(app, "history", None):
+                app.history.sent(turn.umo or turn.source, turn.source, text, turn.user_id, turn.reason,
+                                 identity=turn.id + ":reply")
+            else:
+                app.messages.record_bot(turn.source, text, turn.user_id, turn.reason)
         ids = event.get_extra("shrink_examples", [])
         if ids:
             app.expressions.used(ids)
@@ -767,8 +940,11 @@ class ConversationAdapter:
             try:
                 chain = MessageChain([Plain(finished.second)])
                 chain.use_markdown(False)
-                await asyncio.wait_for(event.send(chain), 30)
-                app.messages.record_bot(turn.source, finished.second, turn.user_id, turn.reason)
+                accepted = await asyncio.wait_for(event.send(chain), 30)
+                if accepted is False:
+                    return
+                app.history.sent(turn.umo or turn.source, turn.source, finished.second, turn.user_id,
+                                 turn.reason, identity=turn.id + ":second")
             except Exception as exc:
                 app.tasks.error("second_bubble", exc)
         await self.send_meme(event)
@@ -796,9 +972,12 @@ class ConversationAdapter:
                 component = QQSticker(file="base64://" + await image.convert_to_base64())
             chain = MessageChain([component])
             chain.use_markdown(False)
-            await asyncio.wait_for(event.send(chain), 30)
+            accepted = await asyncio.wait_for(event.send(chain), 30)
+            if accepted is False:
+                return
             app.memes.sent(meme_id, turn.source)
-            app.messages.record_bot(turn.source, "[表情]", turn.user_id, turn.reason)
+            app.history.sent(turn.umo or turn.source, turn.source, "[表情]", turn.user_id,
+                             turn.reason, identity=turn.id + ":meme")
         except Exception as exc:
             app.tasks.error("meme_send", exc)
 
@@ -823,6 +1002,9 @@ class ConversationAdapter:
             reply.committed = True
         content = getattr(result, "content", None) or []
         text = " ".join(str(getattr(c, "text", "") or "") for c in content) or str(result or "")
+        identity = event.get_extra("shrink_tool_call_id")
+        if identity and getattr(self.app, "history", None):
+            self.app.history.tool_end(event.unified_msg_origin, identity, text)
         tools.append(tool_step(getattr(tool, "name", str(tool)), args, text))
         self.enter(event, "model")
 
@@ -871,6 +1053,10 @@ class ConversationAdapter:
         turn = self.tool_turn(event)
         if not turn:
             return prompt_text("toolret.no_turn")
+        if keyword.startswith("checkpoint:"):
+            import json
+            result = self.app.history.read_checkpoint(event.unified_msg_origin, int(keyword.split(":", 1)[1]))
+            return json.dumps(result, ensure_ascii=False)
         return self.app.tools.history(turn.source, keyword, person, days)
 
     async def lookup(self, event, query):
@@ -881,9 +1067,10 @@ class ConversationAdapter:
         # Only the person's own words in this turn can widen the search; a background task
         # works for its owner's scope and gets no such request.
         request = own.text if own is turn and own else ""
+        decision = event.get_extra("shrink_decision") if own is turn else None
         return await self.app.tools.lookup(
             query, source=turn.source, speaker=turn.user_id, private=turn.private,
-            request=request,
+            request=request, **({"decision": decision} if decision is not None else {}),
         )
 
     async def find_meme(self, event, keyword):

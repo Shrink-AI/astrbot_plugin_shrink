@@ -44,9 +44,14 @@ class PluginHost:
             except Exception:
                 return ""
 
+        from .decision_backends import HaikuDecisionBackend, LayaDecisionBackend, registered_catalog
+        self.application.decisions.backends = {
+            "haiku": HaikuDecisionBackend(context, self.application.state),
+            "laya": LayaDecisionBackend(self.application.state),
+        }
         self.conversation = ConversationAdapter(
             self.application, plugin_module, umos=self.bridge.umos, host_quotes=host_quotes,
-            router_prompt=router_prompt,
+            router_prompt=router_prompt, catalog=lambda: registered_catalog(context),
         )
         self.dashboard = None
         self.static_dir = static_dir
@@ -112,6 +117,8 @@ class PluginHost:
             app.tasks.spawn(self.knowledge.start())
             app.tasks.spawn(self.native_skills.start())
             app.tasks.spawn(self.operations.start())
+            from .input_recovery import recover_inputs
+            await recover_inputs(self.bridge.context, app.inbox)
         except BaseException:
             await self.close()
             raise

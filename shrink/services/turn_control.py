@@ -9,6 +9,10 @@ def is_stop_request(text):
         r"(?:(?:先)?(?:停下来|停止|暂停|别干了|别做了|不要继续|不用继续))*", text))
 
 
+def is_revocation(text):
+    return bool(re.fullmatch(r"\s*(?:石英[，, ]*)?(?:撤销|撤回|取消)(?:之前的|所有)?授权[。！!\s]*", text or ""))
+
+
 def unsupported_claim(text, steps, task=None):
     claim = re.search(
         r"(?:同步|提交|推送|部署|安装|修改|发送|关闭|取消)(?:好|完|成功|完成)了?"
@@ -27,5 +31,7 @@ def unsupported_claim(text, steps, task=None):
     return not any((step.get("execution") or {}).get("status") in allowed for step in steps or [])
 
 
-def is_task_followup(text):
+def is_task_followup(text, decision=None):
+    if decision and not decision["fallback"]:
+        return bool(decision["decision"]["task"] or decision["decision"]["intent"] == "supplement")
     return bool(re.search(r"进度|干完|做完|处理完|同步|提交|推送|部署|停下来|别干了", text or ""))

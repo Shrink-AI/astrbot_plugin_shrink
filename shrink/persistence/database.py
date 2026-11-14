@@ -10,6 +10,7 @@ from .schema import migrate_schema
 class Database:
     def __init__(self, root: Path):
         self.root = root
+        self._transaction_depth = 0
         root.mkdir(parents=True, exist_ok=True)
         (root / "memes").mkdir(exist_ok=True)
         self.connection = sqlite3.connect(root / "shrink.db")
@@ -22,9 +23,17 @@ class Database:
 
     @contextmanager
     def transaction(self):
-        # Repository transactions are synchronous; never hold one across an await.
-        with self.connection:
-            yield self.connection
+        # Nested repository writes must commit with their owning input transaction.
+        depth = self._transaction_depth
+        self._transaction_depth += 1
+        try:
+            if depth:
+                yield self.connection
+            else:
+                with self.connection:
+                    yield self.connection
+        finally:
+            self._transaction_depth -= 1
 
     def rows(self, sql, args=()):
         return [dict(row) for row in self.connection.execute(sql, args)]

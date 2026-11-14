@@ -115,7 +115,7 @@ class ToolService:
         return "\n".join(parts)[:OUTPUT_LIMIT]
 
     # ---- people and memories -----------------------------------------------------------------------
-    async def lookup(self, query, *, source, speaker, private, request=""):
+    async def lookup(self, query, *, source, speaker, private, request="", decision=None):
         query = (query or "").strip()[:100]
         if not query:
             return "要查谁或什么？"
@@ -141,7 +141,7 @@ class ToolService:
             # back to look and whether their private chat counts; the model's query does not.
             name = self.people.display(speaker)
             found = self.recent.find(speaker, source, query + " " + request, name=name,
-                                     request=request, lines=20, budget=1600)
+                                     request=request, lines=20, budget=1600, decision=decision)
             if found.lines or found.asked:
                 parts.extend(self.recent.render(found, name))
         if not parts:

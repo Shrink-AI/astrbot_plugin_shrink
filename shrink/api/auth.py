@@ -14,7 +14,7 @@ from ..services.memes import MAX_IMAGE_BYTES
 from .schemas import Login, PasswordChange
 
 
-def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None):
+def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None, inbox=None):
     ph = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=1)
     if not state.get("admin_hash"):
         password = secrets.token_urlsafe(24)
@@ -54,7 +54,12 @@ def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None):
                 request.headers.get("x-csrf-token", ""), session["csrf"]
             ):
                 return JSONResponse({"detail": "操作凭证无效，请刷新页面"}, status_code=403)
-        response = await call_next(request)
+        if (inbox and mutation and path.startswith("/api/v1/") and
+                path not in {"/api/v1/login", "/api/v1/logout", "/api/v1/password"}):
+            from .inbox import dispatch
+            response = await dispatch(request, call_next, inbox)
+        else:
+            response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"

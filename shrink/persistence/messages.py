@@ -48,7 +48,7 @@ class MessageRepository:
             is_bot = bool(old and old[1] == "bot")
             text = message.get("text", "")
             created = message.get("created", now)
-            ok = learnable(text, sender_is_bot=is_bot)
+            ok = message.get("learnable", True) and learnable(text, sender_is_bot=is_bot)
             if ok and connection.execute(
                 "SELECT 1 FROM messages WHERE user_id=? AND trim(text)=? AND created>? LIMIT 1",
                 (uid, text.strip(), created - 86400),
@@ -106,6 +106,14 @@ class MessageRepository:
             )
         return message_id
 
+    def raw(self, identity, source, text, *, sender, is_bot=False, addressee=""):
+        with self.database.transaction() as con:
+            con.execute("INSERT OR IGNORE INTO messages"
+                        "(id,user_id,source,text,speaker_name,is_bot,learnable,learned,digested,created,addressee) "
+                        "VALUES(?,?,?,?,?,?,0,1,?,?,?)",
+                        (identity, sender, source, text, sender, int(is_bot), int(not is_bot), time.time(), addressee))
+        return identity
+
     def set_addressee(self, message_id, addressee):
         with self.database.transaction() as connection:
             connection.execute("UPDATE messages SET addressee=? WHERE id=?", (addressee, message_id))
@@ -113,12 +121,28 @@ class MessageRepository:
     # ---- conversation context -------------------------------------------------------------------
     def window(self, source, limit=200, before=None):
         """Newest-first messages of one conversation, with speaker kind."""
-        return self.database.rows(
+        return self.current(self.database.rows(
             "SELECT m.*,COALESCE(p.kind,'human') AS speaker_kind,COALESCE(p.name,m.speaker_name) "
             "AS person_name FROM messages m LEFT JOIN people p ON p.id=m.user_id "
             "WHERE m.source=? AND (? IS NULL OR m.created<=?) ORDER BY m.created DESC LIMIT ?",
             (source, before, before, limit),
-        )
+        ))
+
+    def current(self, rows):
+        if not rows or not self.database.rows("SELECT 1 FROM sqlite_master WHERE name='conversation_events'"):
+            return rows
+        identities = [row["id"] for row in rows]
+        marks = ",".join("?" for _ in identities)
+        changes = self.database.rows(
+            f"SELECT target,kind,message_id FROM conversation_events WHERE target IN ({marks}) ORDER BY id",
+            tuple(identities))
+        latest = {row["target"]: row for row in changes}
+        for row in rows:
+            if row["id"] in latest:
+                change = latest[row["id"]]
+                row["text"] = (f"[原消息已{'撤回' if change['kind'] == 'retracted' else '纠正'}，"
+                               f"不再作为当前事实；状态引用 {change['message_id']}]")
+        return rows
 
     def count_since(self, source, since, exclude_self=True):
         return self.database.connection.execute(
@@ -144,12 +168,12 @@ class MessageRepository:
 
     def elsewhere(self, user_id, source, since, limit=6, include_private=True):
         """What a person said in other conversations, to anyone, and the bot's replies to them."""
-        return self.database.rows(
+        return self.current(self.database.rows(
             "SELECT * FROM messages WHERE source!=? AND created>? AND length(trim(text))>0 AND "
             "(?=1 OR instr(source,':private:')=0) AND "
             "(user_id=? OR (is_bot=1 AND addressee=?)) ORDER BY created DESC LIMIT ?",
             (source, since, int(include_private), user_id, user_id, limit),
-        )
+        ))
 
     def get_many(self, ids):
         if not ids:

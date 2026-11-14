@@ -49,7 +49,7 @@ export function SettingsPage() {
       <Switch id={`setting-${key}`} checked={!!settings[key]}
         onCheckedChange={value => set(key, value === true)} />
     </Field>;
-  const select = (key: 'model_provider' | 'embedding_provider', label: string, options: string[]) =>
+  const select = (key: 'model_provider' | 'embedding_provider' | 'decision_provider', label: string, options: string[]) =>
     <Field key={key} orientation="horizontal">
       <FieldLabel htmlFor={`setting-${key}`}>{label}</FieldLabel>
       <Select value={settings[key]} onValueChange={next => set(key, next)}>
@@ -82,6 +82,24 @@ export function SettingsPage() {
             {num('debounce_seconds', '等下一条消息（秒）', 0.1, 5, 0.1)}
             {num('debounce_max_seconds', '连续发言最多等待（秒）', 1, 15, 0.5)}
             {flag('cooperative_stop', '新消息或“停”让还没动手的旧回复立刻收手（试验）')}
+          </FieldGroup>
+        </Section>
+        <Section title="决策" desc="每次仅调用所选后端；超时仍允许私聊和明确呼叫进入主人格。Laya 接口尚未核实。">
+          <FieldGroup className="flex flex-col gap-5">
+            <Field orientation="horizontal">
+              <FieldLabel htmlFor="decision-backend">决策后端</FieldLabel>
+              <Select value={settings.decision_backend} onValueChange={value => set('decision_backend', value as 'haiku' | 'laya')}>
+                <SelectTrigger id="decision-backend" className="w-60"><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="haiku">Haiku</SelectItem><SelectItem value="laya">Laya（自配端点）</SelectItem></SelectContent>
+              </Select>
+            </Field>
+            {select('decision_provider', 'Haiku 模型', [...new Set([settings.decision_provider, ...providers.chat])])}
+            {num('decision_timeout', '决策时限（秒）', 0.01, 10, 0.1)}
+            {num('decision_capability_limit', '工具候选上限', 1, 20)}
+            <Field><FieldLabel htmlFor="laya-endpoint">Laya HTTP 端点</FieldLabel>
+              <Input id="laya-endpoint" value={settings.decision_laya_endpoint} onChange={e => set('decision_laya_endpoint', e.target.value)} /></Field>
+            <Field><FieldLabel htmlFor="laya-version">Laya 版本标识</FieldLabel>
+              <Input id="laya-version" value={settings.decision_laya_version} onChange={e => set('decision_laya_version', e.target.value)} /></Field>
           </FieldGroup>
         </Section>
         <Section title="记忆与整理" desc="决定群聊什么时候被整理，以及记忆怎么存下来、带几条回去。">

@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .prompts.chat import fixed_persona, persona_prompt  # noqa: F401  (public re-export)
@@ -10,6 +12,12 @@ class Settings(BaseModel):
 
     model_provider: str = ""
     embedding_provider: str = ""
+    decision_backend: Literal["haiku", "laya"] = "haiku"
+    decision_provider: str = "shrink/claude-haiku-5-5"
+    decision_timeout: float = Field(3, ge=0.01, le=10)
+    decision_capability_limit: int = Field(5, ge=1, le=20)
+    decision_laya_endpoint: str = ""
+    decision_laya_version: str = "unverified"
     persona_id: str = "default"
     spontaneous_probability: float = Field(0.06, ge=0, le=1)
     spontaneous_limit: int = Field(2, ge=0, le=10)

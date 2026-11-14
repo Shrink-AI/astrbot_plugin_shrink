@@ -16,4 +16,8 @@ def record_delivery(app, source, text, delivery_id):
             ("notification:" + delivery_id, "self", source["source"], "", "石英", text, "{}",
              source["user_id"], now))
         con.execute("INSERT INTO outbound_receipts VALUES(?,?)", (delivery_id, time.time()))
+        if getattr(app, "history", None):
+            app.history.repository.append(
+                source.get("session") or source["source"], "message:notification:" + delivery_id,
+                "assistant", "notification:" + delivery_id, speaker="self")
     return True
