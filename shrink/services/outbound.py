@@ -47,6 +47,9 @@ class Outbound:
                     known = facts.get("status") if isinstance(facts, dict) else None
                     result = fallback(known) or render("outbound.fallback")
                 break
+        if chat is None and isinstance(result, str):
+            from .outbound_guard import safe_expression
+            result = safe_expression(result, facts, kind, persona_prompt(self.app.persona_repository.learned_persona()))
         if identity is not None:
             self.repository.finish(identity, "silent" if isinstance(result, Silent) else "ready",
                                    "" if isinstance(result, Silent) else result)

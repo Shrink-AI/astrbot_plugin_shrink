@@ -14,7 +14,7 @@
 
 ## 对外表达和发送
 
-新增核心通知调用 `conversation.notifications.send_once(event, key, facts, request=..., kind=...)`。
+新增核心通知调用 `conversation.notifications.send_once(event, key, facts, request=..., kind=...)`，先进入核心持久发件箱；返回 False 也可能是排队、延后或抑制，调用方不得回退原文或另行发送。排队与选择规则在 services/notification_outbox.py、notification_selection.py，SQL 在 persistence/outbox.py，平台发送仍在原 Notifications.send_once。
 
 - `facts` 只传已确认的执行事实；原请求单独传入。不能把模型的“完成了”当执行证据。
 - `key` 来自原消息、任务或事件的稳定标识；内部重试使用同一标识。不能每次生成随机编号规避去重。
@@ -28,7 +28,7 @@
 - 每个前台轮次落一条 `turn_traces` 记录（输入、会话、发言人、运行标识、后台任务、各阶段耗时和结局），`GET /api/v1/turns/latency` 给出 p50／p95／最长。新增的前台等待必须归入已有阶段或新增阶段，不能落在记录之外。
 - 同一发言人的新消息会让尚未动手的旧轮在请求钩子入口退出、在回复钩子里跳过表达。停止运行中的旧轮只能走宿主的协作停止（`foreground.request_stop`），不直接取消其任务；该路径由设置 `cooperative_stop` 控制，默认关闭，真实宿主集成测试通过前不要打开。
 - 普通聊天保留 `ConversationAdapter` 的最终表达链路。不得在工具钩子或子代理内直接 `event.send`、`send_message` 或发送固定占位文案。
-- 独立插件使用 `message.compose` 能力生成文本，自行持久化任务和发送回执，确认平台接受后调用 `record_sent`。不得依赖核心 Python 模块。
+- 独立插件优先使用 `message.notify submit/status`，提交稳定事件标识、消息类型、事实和可信原会话；提交后不得自行发送。`message.compose`／`record_sent` 保留给外部插件仍持有发送权的兼容事件。每会话、创建者、消息类型及稳定事件分别固定发送所有者，冲突静默或拒绝，不自动切换。未迁移插件仍负责自身发送幂等；契约见 plugin-protocol.md。不得依赖核心 Python 模块。
 
 ## 任务和资料范围
 

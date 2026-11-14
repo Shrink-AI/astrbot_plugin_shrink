@@ -69,6 +69,10 @@ class PluginHost:
         self.application.memory.knowledge = self.knowledge
         self.application.digests.resolve = lambda rows: self.knowledge.resolve(rows, "digests")
         self.application.plugin_bus = CapabilityClient()
+        from .authorizations import AuthorizationAdapter
+        self.application.authorization_adapter = AuthorizationAdapter(self.application, context)
+        from .notifications import notification_event
+        self.application.notification_event = lambda session, sender: notification_event(context, session, sender)
         self.public_api = PublicAPI(self)
         self.application.outbound.resolve_scope = self.resolve_scope
 
@@ -114,6 +118,8 @@ class PluginHost:
             )
             await self.dashboard.start()
             app.start()
+            app.tasks.spawn(app.authorizations.recover())
+            app.tasks.spawn(app.notification_outbox.run())
             app.tasks.spawn(self.knowledge.start())
             app.tasks.spawn(self.native_skills.start())
             app.tasks.spawn(self.operations.start())

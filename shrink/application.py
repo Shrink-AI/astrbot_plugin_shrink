@@ -80,6 +80,10 @@ class Application:
             from .services.inbox import Inbox
             self.history = ConversationHistory(HistoryRepository(self.database), self.messages, model, error)
             self.inbox = Inbox(InboxRepository(self.database), self.messages, self.history)
+            from .persistence.authorizations import Authorizations
+            from .services.authorizations import AuthorizationService
+            self.authorizations = AuthorizationService(Authorizations(self.database), self.inbox.repository)
+            self.authorizations.inbox_service = self.inbox
             from .persistence.decisions import DecisionRepository
             from .services.decisions import Decisions
             self.decisions = Decisions(DecisionRepository(self.database), self.inbox.repository,
@@ -101,6 +105,12 @@ class Application:
                 self.state, self.persona_repository, self.expressions, model, error
             )
             self.outbound = Outbound(self)
+            from .persistence.outbox import OutboxRepository
+            from .persistence.notifications import NotificationRepository
+            from .services.notification_outbox import NotificationOutbox
+            self.notification_outbox = NotificationOutbox(OutboxRepository(self.database),
+                NotificationRepository(self.database), self.inbox, self.decisions, error)
+            self.notification_outbox.record = self.outbound.record
             self.expression.outbound = self.outbound
             self.materials = Materials(self)
             self.attachments = Attachments(self)

@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -119,8 +119,16 @@ def router_for(app):
         return app.plugin_bus.catalog()
 
     @router.post("/plugin-capabilities")
-    async def plugin_call(body: dict):
+    async def plugin_call(body: dict, request: Request):
         event = event_for(body.get('session', ''))
+        if body['capability'] == 'computer.control' and body['action'] in {'ungrant', 'revoke'}:
+            args = body.get('arguments', {})
+            providers = [c['provider'] for c in app.plugin_bus.catalog() if c['name'] == 'computer.control'
+                         and (not body.get('provider') or c['provider'] == body['provider'])]
+            if len(providers) != 1:
+                raise ValueError('请明确设备能力提供者')
+            app.authorizations.repository.access_block(providers[0], args['device_id'],
+                str(args.get('grantee', '')) if body['action'] == 'ungrant' else '', request.state.input_id)
         return await app.plugin_bus.call(body['capability'], body['action'], body.get('arguments', {}),
                                         provider=body.get('provider'), version=body.get('version', 1),
                                         scope={'session': event.unified_msg_origin,

@@ -14,10 +14,25 @@ class Notifications:
         if not hasattr(app, '_notification_inflight'):
             app._notification_inflight = set()
         self.inflight = app._notification_inflight
+        if getattr(app, 'notification_outbox', None):
+            app.notification_outbox.transport = self.transport
 
-    async def send_once(self, event, key, facts, *, request="", kind="progress", retry=False):
+    async def transport(self, row, event, retry):
+        if event is None or event.unified_msg_origin != row['session']:
+            factory = getattr(self.app, 'notification_event', None)
+            if not factory:
+                raise RuntimeError('通知原会话发送适配器未就绪')
+            event = factory(row['session'], row['sender'])
+        return await self.send_once(event, row['event_id'], row['facts'], request=row['request'],
+                                    kind=row['kind'], retry=retry, queued=True)
+
+    async def send_once(self, event, key, facts, *, request="", kind="progress", retry=False, queued=False):
         scope = {"session": event.unified_msg_origin, "sender": str(event.get_sender_id())}
         identity = json.dumps([scope["session"], scope["sender"], key], ensure_ascii=False)
+        outbox = getattr(self.app, 'notification_outbox', None)
+        if outbox and not queued:
+            row = outbox.submit(scope, key, facts, request=request, kind=kind)
+            return await outbox.deliver(row['id'], event=event, retry=retry)
         incoming = None
         if getattr(self.app, "inbox", None):
             incoming, _ = self.app.inbox.event(
@@ -41,6 +56,9 @@ class Notifications:
                 return False
             if event.get_extra("shrink_cancelled"):
                 self.repository.state(identity, "cancelled")
+                return False
+            if outbox and not outbox.ready_to_send(identity, facts):
+                self.repository.state(identity, 'deferred')
                 return False
             from astrbot.api.message_components import Plain
             from astrbot.core.message.message_event_result import MessageChain

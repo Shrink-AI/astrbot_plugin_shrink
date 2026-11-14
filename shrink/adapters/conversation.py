@@ -70,6 +70,11 @@ class ConversationAdapter:
         self.notifications = Notifications(app)
         self.traces = getattr(app, "turn_traces", None) or TurnTraceRepository(app.database)
         self.active_turns = {}
+        if getattr(app, 'notification_outbox', None):
+            app.notification_outbox.foreground = lambda session: any(
+                key[0] == session and any(not task.done() and not event.get_extra('shrink_sent')
+                    and not event.get_extra('shrink_cancelled') for event, task in turns)
+                for key, turns in self.active_turns.items())
 
     # ---- receive ---------------------------------------------------------------------------------
     def build_turn(self, event, platform, uid, source, group, message_id):
@@ -316,6 +321,9 @@ class ConversationAdapter:
                 task.cancel()
         self.debouncer.pending.pop(key, None)
         self.debouncer.replies.pop(key, None)
+        if is_revocation(turn.text) and getattr(self.app, "authorizations", None):
+            self.app.authorizations.revoke_scope(event.get_extra("shrink_input_id"), {
+                "session": event.unified_msg_origin, "sender": str(event.get_sender_id()), "admin": event.is_admin()})
         decision = event.get_extra("shrink_decision")
         target = decision["decision"]["task"] if decision else None
         if target:
@@ -734,6 +742,7 @@ class ConversationAdapter:
             form = "tool_result"
             event.set_extra("shrink_form", form)
         execution = None
+        task = None
         task_id = event.get_extra("shrink_background_task")
         if task_id:
             try:
@@ -746,6 +755,10 @@ class ConversationAdapter:
         if not execution and steps:
             execution = {"status": "unverified", "tool_steps": steps,
                          "note": "以下是工具记录；模型草稿不是执行证据，单步完成不代表整个请求完成"}
+        if task is not None:
+            from ..services.notification_outbox import task_fact
+            event.set_extra('shrink_reported_task', task_id)
+            event.set_extra('shrink_reported_fact', task_fact(task))
         finished = await app.expression.finish(
             response.completion_text or "",
             user_text=turn.text,
@@ -850,14 +863,25 @@ class ConversationAdapter:
         event.set_extra("shrink_text", text)
         self.watch_delivery(event)
 
-    @staticmethod
-    def watch_delivery(event):
+    def watch_delivery(self, event):
         if event.get_extra("shrink_observing_delivery"):
             return
         event.set_extra("shrink_observing_delivery", True)
         original = event.send
 
         async def send(chain):
+            box = getattr(self.app, 'notification_outbox', None)
+            fact = event.get_extra('shrink_reported_fact')
+            text = ''.join(c.text for c in chain.chain if isinstance(c, Plain))
+            identity = None
+            if box and fact and text == event.get_extra('shrink_text'):
+                turn = event.get_extra('shrink_turn')
+                identity = box.foreground_begin(
+                    {'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())},
+                    event.get_extra('shrink_reported_task'), turn.id + ':reply', fact, text)
+                if identity is None:
+                    return False
+            accepted = False
             previous = getattr(event, "_has_send_oper", None)
             if previous is not None:
                 event._has_send_oper = False
@@ -865,6 +889,8 @@ class ConversationAdapter:
                 result = await original(chain)
                 accepted = result is not False and (previous is None or event._has_send_oper)
             finally:
+                if identity:
+                    box.foreground_end(identity, accepted)
                 if previous is not None:
                     event._has_send_oper = previous or event._has_send_oper
             if accepted:

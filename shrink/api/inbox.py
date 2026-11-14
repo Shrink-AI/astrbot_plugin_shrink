@@ -26,6 +26,7 @@ async def dispatch(request, call_next, inbox):
         if row["claimed"] is not None:
             return JSONResponse({"detail": "操作已领取，结果尚未确认；请核对实际状态", "input_id": row["id"]},
                                 status_code=409, headers=headers)
+    request.state.input_id = row["id"]
     inbox.repository.claim([row["id"]])
     response = await call_next(request)
     content = b"".join([chunk async for chunk in response.body_iterator])

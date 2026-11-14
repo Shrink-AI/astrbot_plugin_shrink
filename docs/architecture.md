@@ -176,3 +176,31 @@ WebUI 写请求在鉴权及 CSRF 验证后入箱，客户端发送 `Idempotency-
 独立部署目录中的 queued／running／issued／completed／rolled_back／failed／unknown 是部署执行器状态，不迁入任务状态列。开发任务提交部署后为 waiting_external，wait_reason=deployment；收到完成证据才进入 completed，失败或不明转 needs_attention。收到结果后经同一 transition 入口归并，已停止的任务不复活；部署通知仍独立按真实回执去重，不因业务状态变更重新发送。
 
 `/api/v1/operations/tasks`、详情、cancel、resume、redeliver 路径保持兼容。resume 可带 `{"answer":"原用户答复"}`，保留任务 ID；详情增加 attempts、next_run、retry_count。问题与后续结果使用各自稳定通知标识，避免同一任务的问题回执吞掉最终结果。前端 TaskStatus 使用新状态联合类型，开发任务“完成”和独立部署“完成”分别展示。
+
+
+## 持续授权与通知发件箱
+
+授权记录与策略规则分别位于 persistence/authorizations.py、services/authorizations.py。授予者、原输入引用、管理员、设备、提供者、原会话、任务／执行会话、类别、有效期、版本和撤销审计均为持久数据。后台或模型不能用工具输出创建授权；聊天授权须匹配明确范围的原话，WebUI 操作须匹配已鉴权收件箱保存的表单。设备访问权经 computer.control devices 单独复核，策略不授予访问权。adapters/authorizations.py 只调用现有能力；原生电脑批准协议不进入核心。
+
+确认事件和输入引用原子保存，审批操作标识在任何批准调用之前预占。重复与未知只查询原 request_id；只有完成回执精确对应原执行会话及批准对象才记 confirmed。等待授权的问题通过统一通知入口按原会话合并；重启补交尚未送出的提问。A01–A03 的本地实现、审计及限制见 plugin-protocol.md。外部插件持久幂等、执行前 validate、设备撤权队列作废与真实回执结构尚未联调；不能把核心单元测试当成电脑端已验收。
+
+通知业务记录在 notification_outbox，事实所有权在 notification_fact_claims，迁移期发送所有权在 notification_send_owners / notification_event_owners，平台投递状态仍在 notification_receipts。它们不改变 operation_tasks.status 或 task_attempts.status。input_events 保存通知的持久接收位置并引用 messages 原事实；outbox 的初始 facts 不重复保存正文，只在合并／过滤时保存派生事实。
+
+| 发件箱状态 | 含义与恢复 |
+| --- | --- |
+| pending / merging | 排队或等待合并；重启继续，原会话新输入优先 |
+| delivering | 选择、表达或发送中；重启先读底层回执，不能直接重发 |
+| suppressed | 安静事件、已有回报、事实过时或兼容发送者所有；事实与依据可查 |
+| sent | 底层 platform_accepted；聊天与核心历史以同一回执幂等写入 |
+| unknown | sending 残留或发送调用未确认；不写已发送历史，不自动重发 |
+| failed | 未开始发送的表达失败；原任务明确补发可重试表达 |
+
+底层 deferred 表示表达期间来了新输入或事实发生变化，未开始平台发送，允许重新排队。原 failed/interrupted/composing 的明确补发行为保留。进展回执不会覆盖任务最终结果的 delivery 投影；部署执行器结局保留在 deployment_status，业务状态取任务表，两者不混用。
+
+统一路径为：核心原 send_once 调用或 message.notify 提交 → 原子接收／所有权 → 通知价值选择 → 同事实去重／进展或确认问题合并 → 原会话表达 → 再检查新输入、事实和原始资料泄漏 → 原 Notifications.send_once 运输 → 回执及历史。规则确定的安静／关键事件不调分类模型，普通进展复用已选决策后端及其时延预算；失败静默。选择结果写入 decisions 与通知记录。停止、撤权、需要决定的阻碍有独立高优先级通道，不排在普通后台表达后。任何队列写入不持有宿主会话锁。
+
+已收敛任务结果、ask_user 提问、前台等待超时及最终超时说明、部署结果、停止确认、持续授权提问。删除这些入口直接承担发送时序的职责，保留现有统一运输代码，没有增加 event.send / send_message 调用点。普通聊天按已定设计继续走宿主 agent 阶段；包含任务事实的前台回复在原发送调用前持久预占，成功才确认，发送未知也阻止后台重报同一事实。普通无任务聊天不额外存通知记录。第二气泡、表情仍在会话锁外，文件导出保留原附件发送，不纳入文本通知队列。外部提醒／电脑插件保留兼容入口，未宣称已迁移。
+
+AstrBot 4.29.4 的 aiocqhttp send 会等待底层 OneBot 发送调用并在异常时上抛；正常返回 None，宿主主动 send_message 返回是否找到平台并等待 send_by_session。核心沿用该宿主确认边界，False、异常和超时均不当作送达。它不是用户已读证明；真实 QQ／其他平台的服务端回执以及发送未知的人工核对尚未联调。真实 runner 测试使用脚本模型与假平台，只证明核心排队、原会话与去重时序。
+
+授权页与通知页分别使用 /api/v1/authorizations、/authorizations/action、/notifications；原任务 redeliver 路径保持兼容。所有接口沿用现有管理员认证和输入收件箱，没有新增未鉴权端点。

@@ -125,6 +125,7 @@ class World:
             return None
 
         self.app = Application(root, model, embed, nothing)
+        self.app.authorizations.is_admin = lambda actor: actor == "100"
         settings = self.app.state.settings.model_dump()
         settings.update(debounce_enabled=False, skills_enabled=False, meme_enabled=False,
                         split_probability=0.0)

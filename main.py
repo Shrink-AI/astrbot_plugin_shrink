@@ -149,6 +149,22 @@ class ShrinkPlugin(Star):
         except Exception as exc:
             return json.dumps({"ok": False, "error": str(exc)[:1500]}, ensure_ascii=False)
 
+    @filter.llm_tool(name="shrink_authorization")
+    @tool_doc("shrink_authorization", action="string", arguments="string")
+    async def authorization(self, event: AstrMessageEvent, action: str = "list", arguments: str = "{}"):
+        """查看、设置、暂停、撤销持续授权，或答复具体确认对象。授权只取本轮可信用户原话。
+
+        Args:
+            action(string): list/grant/pause/revoke/answer/reconcile。
+            arguments(string): JSON；grant 用 device,provider,execution_session,categories，可选 task,future；answer 用 confirmation_id,task。
+        """
+        import json
+        result = await self.host.application.authorization_adapter.manage(
+            action, json.loads(arguments), {"session": event.unified_msg_origin,
+                "sender": str(event.get_sender_id()), "admin": event.is_admin()},
+            event.get_extra("shrink_input_id") or "")
+        return json.dumps(result, ensure_ascii=False)
+
     @filter.llm_tool(name="shrink_plugin_capability")
     async def plugin_capability(self, event: AstrMessageEvent, action: str, capability: str = "",
                                 operation: str = "", arguments: str = "{}", provider: str = ""):
@@ -170,7 +186,19 @@ class ShrinkPlugin(Star):
                 return json.dumps(bus.catalog(), ensure_ascii=False)
             if action != 'call':
                 raise ValueError('action 必须是 list 或 call')
-            result = await bus.call(capability, operation, json.loads(arguments), provider=provider or None,
+            parsed = json.loads(arguments)
+            if capability in {'authorization.confirmation', 'message.notify'}:
+                raise ValueError('该入口只接收可信插件事件，不能把模型转述作为确认或通知事实')
+            if capability == 'computer.control' and operation == 'approve':
+                raise ValueError('逐次批准请用 shrink_authorization answer，绑定本轮用户输入、任务与确认对象')
+            if capability == 'computer.control' and operation in {'ungrant', 'revoke'}:
+                candidates = [c['provider'] for c in bus.catalog() if c['name'] == capability
+                              and (not provider or c['provider'] == provider)]
+                if len(candidates) != 1:
+                    raise ValueError('请明确设备能力提供者')
+                self.host.application.authorizations.repository.access_block(candidates[0], parsed['device_id'],
+                    str(parsed.get('grantee', '')) if operation == 'ungrant' else '', event.get_extra('shrink_input_id') or '')
+            result = await bus.call(capability, operation, parsed, provider=provider or None,
                                     scope={'session': event.unified_msg_origin,
                                            'sender': str(event.get_sender_id()), 'admin': True,
                                            'message_id': str(event.message_obj.message_id)})

@@ -185,7 +185,6 @@ class Deployments:
                         self.notification_attempts.add(row["id"])
                         self.save_notification(delivery_path, delivery["state"], delivery.get("text", ""))
                     if delivery.get("state") == "platform_accepted":
-                        self.app.outbound.record(scope, delivery["text"], "deployment:" + directory.name)
                         (directory / "reported").write_text(str(time.time()))
                         continue
                     if delivery.get("state") in {"sending", "unknown", "silent"}:
@@ -198,6 +197,8 @@ class Deployments:
                     event = notification_event(self.operations.context, scope["session"], scope["sender"])
                     await notices.send_once(event, key, row, kind="deployment", retry=True)
                     receipt = notices.repository.get(identity)
+                    if not receipt:
+                        continue
                     self.save_notification(delivery_path, receipt["state"], receipt["text"])
                     if receipt["state"] in {"platform_accepted", "silent"}:
                         (directory / "reported").write_text(str(time.time()))

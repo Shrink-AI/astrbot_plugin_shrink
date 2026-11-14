@@ -18,7 +18,7 @@ class NotificationRepository:
         with self.db.transaction() as con:
             if retry and con.execute(
                     "UPDATE notification_receipts SET state='composing',error='',text='' "
-                    "WHERE id=? AND state IN ('failed','interrupted','composing')",
+                    "WHERE id=? AND state IN ('failed','interrupted','composing','deferred')",
                     (identity,)).rowcount:
                 return True
             return bool(con.execute(
