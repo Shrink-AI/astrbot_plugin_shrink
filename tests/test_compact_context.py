@@ -29,7 +29,7 @@ async def test_tool_history_projects_large_payload_but_preserves_originals(app):
     assert json.loads(json.loads(original["tool_calls"])[0]["function"]["arguments"]) == argument
 
 
-async def test_legacy_tool_summary_invalidates_once_without_deleting_chat(app):
+async def test_history_constructor_does_not_invalidate_tool_checkpoints(app):
     receive(app)
     session = "bot:GroupMessage:1"
     app.history.tool_start(session, "old", "query", {"q": "x"})
@@ -38,10 +38,8 @@ async def test_legacy_tool_summary_invalidates_once_without_deleting_chat(app):
     with app.database.transaction() as con:
         con.execute("DELETE FROM kv WHERE key='history_tool_projection_v1'")
     repo = HistoryRepository(app.database)
-    assert repo.checkpoint(session) is None
+    assert repo.checkpoint(session)["summary"] == "OLD_TOOL_DUMP"
     assert len(repo.events(session)) == 3
-    repo.compress(session, 1, 3, "NEW_COMPACT", ["tool:old"])
-    assert HistoryRepository(app.database).checkpoint(session)["summary"] == "NEW_COMPACT"
 
 
 @pytest.mark.parametrize("action", ["tools", "guide", "create", "submit", "ask_user"])
@@ -74,3 +72,22 @@ def test_large_expression_input_has_bounded_evidence_and_reference():
     assert len(json.dumps(projected, ensure_ascii=False)) <= 6000
     assert projected["result_ref"] == "task:id" and projected["status"] == "completed"
     assert len(facts["tool_records"]) == 20
+
+
+@pytest.mark.parametrize("result,error", [
+    ("Permission denied: revision conflict", True),
+    ("Delivery unknown; do not retry the write", False),
+])
+def test_execution_report_expression_preserves_tool_evidence_and_total(result, error):
+    from shrink.services.task_reporting import execution_report
+    raw = json.dumps({"arguments": {}, "result": result, "error": error})
+    task = {"id": "task", "status": "needs_attention", "result": "",
+            "events": [{"id": i, "action": "tool_end:write", "result": raw} for i in range(6)]}
+    facts = expression_facts(execution_report(task))
+    assert facts["tool_record_count"] == 6
+    assert len(facts["tool_records"]) == 4
+    last = facts["tool_records"][-1]
+    assert last["summary_unverified"] == result
+    assert last["error"] is error and last["record_ref"] == "task-event:5"
+    assert "success" not in last and "completed" not in last
+    assert task["events"][-1]["result"] == raw

@@ -7,6 +7,8 @@ import time
 from contextlib import closing
 from pathlib import Path
 
+TOOL_PROJECTION_VERSION = "history_tool_projection_v1"
+
 
 def quote(name):
     return '"' + name.replace('"', '""') + '"'
@@ -128,6 +130,20 @@ class UpgradeStore:
             con.execute("INSERT OR REPLACE INTO upgrade_runs VALUES(?,?,?)",
                         (version, json.dumps(report, ensure_ascii=False), time.time()))
 
+    def invalidate_tool_checkpoints(self):
+        """Archive old projections within the upgrade's backup and rollback boundary."""
+        with self.db.transaction() as con:
+            if con.execute("SELECT 1 FROM kv WHERE key=?", (TOOL_PROJECTION_VERSION,)).fetchone():
+                return 0
+            rows = con.execute(
+                "SELECT * FROM conversation_checkpoints WHERE session IN "
+                "(SELECT session FROM conversation_events WHERE tool_calls IS NOT NULL)").fetchall()
+            for row in rows:
+                self.archive("tool_projection_checkpoint", str(row["id"]), dict(row))
+                con.execute("DELETE FROM conversation_checkpoints WHERE id=?", (row["id"],))
+            con.execute("INSERT INTO kv(key,value) VALUES(?,'true')", (TOOL_PROJECTION_VERSION,))
+            return len(rows)
+
     def remove_prefixes(self):
         rows = self.db.rows("SELECT * FROM kv WHERE key LIKE 'context_prefix:%'")
         with self.db.transaction() as con:
@@ -187,6 +203,8 @@ def inspect_upgrade(path, version, *, full=True):
                 "previous": latest_report(con, version),
                 "current_history": bool(con.execute("SELECT 1 FROM kv WHERE key=?",
                                                    (HistoryRepository.MIGRATION,)).fetchone()),
+                "current_tool_projection": bool(con.execute("SELECT 1 FROM kv WHERE key=?",
+                                                           (TOOL_PROJECTION_VERSION,)).fetchone()),
                 "old_delivery": any(r["name"] == "delivery"
                                     for r in con.execute("PRAGMA table_info(operation_tasks)")),
                 "prompts": table_rows(con, "prompt_versions")}

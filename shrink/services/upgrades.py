@@ -12,7 +12,7 @@ from ..persistence.database import Database, StateRepository
 from ..persistence.upgrades import (
     UpgradeStore, backup_database, digest, file_hash, integrity, inspect_upgrade,
     logical_rebuild, prepare_migration_temp, probe_data, restore_database, retained_tables,
-    snapshot_records, archive_settings,
+    snapshot_records, archive_settings, TOOL_PROJECTION_VERSION,
 )
 from ..prompts import CATALOG, placeholders
 from .reply_text import PROMPT_LEAK, strip_prompt_deliberation
@@ -289,7 +289,8 @@ def upgrade_database(path, *, checkpoint=lambda stage: None, verify=True):
     rejected = [r for r in prompt_rows if not recognizable_prompt(r)]
     health = source["integrity"]
     compose = max((r for r in accepted if r["key"] == "outbound.compose"), key=lambda r: r["id"], default=None)
-    structure_current = (source["current_history"] and not source["old_delivery"] and not rejected
+    structure_current = (source["current_history"] and source["current_tool_projection"]
+                         and not source["old_delivery"] and not rejected
                          and health == ["ok"]
                          and not (compose and compose["text"] and split_compose(compose["text"])))
     if previous and structure_current:
@@ -351,6 +352,7 @@ def upgrade_database(path, *, checkpoint=lambda stage: None, verify=True):
         from ..persistence.prompts import PromptRepository
         report["prompts"] = migrate_prompts(PromptRepository(db))
         history, tasks, history_seconds = initialize_repositories(db)
+        report["archived_tool_checkpoints"] = archive.invalidate_tool_checkpoints()
         report["initial_history_seconds"] = round(history_seconds, 6)
         checkpoint("migrated")
         after = snapshot_records(db.connection)
@@ -393,5 +395,7 @@ def startup_upgrade(path):
 
 
 def record_new_database(db):
-    UpgradeStore(db).complete(VERSION, {"version": VERSION, "status": "new", "prompts": {
-        "changed_keys": [], "archived_keys": [], "persona_preserved": False}})
+    with db.transaction() as con:
+        con.execute("INSERT OR IGNORE INTO kv(key,value) VALUES(?,'true')", (TOOL_PROJECTION_VERSION,))
+        UpgradeStore(db).complete(VERSION, {"version": VERSION, "status": "new", "prompts": {
+            "changed_keys": [], "archived_keys": [], "persona_preserved": False}})

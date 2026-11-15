@@ -79,6 +79,64 @@ def test_failure_restores_exact_backup_and_can_retry(legacy, failure_stage):
     assert upgrade_database(legacy)["status"] == "ok"
 
 
+@pytest.mark.parametrize("fail_after_migration", [False, True])
+def test_tool_projection_upgrade_archives_once_and_restores_on_failure(legacy, fail_after_migration):
+    from shrink.persistence.database import Database
+    from shrink.persistence.history import HistoryRepository
+    from shrink.persistence.upgrades import TOOL_PROJECTION_VERSION
+    from shrink.services.upgrades import upgrade_database
+
+    upgrade_database(legacy)
+    db = Database(legacy.parent)
+    repo = HistoryRepository(db)
+    repo.session("tool-session")
+    repo.append("tool-session", "call", "assistant", tool_calls=[
+        {"id": "call", "type": "function", "function": {"name": "read", "arguments": "{}"}}])
+    event_id = repo.events("tool-session")[0]["id"]
+    repo.compress("tool-session", event_id, event_id, "OLD_TOOL_DUMP", [])
+    repo.session("chat-session")
+    repo.compress("chat-session", 1, 1, "CHAT_SUMMARY", [])
+    with db.transaction() as con:
+        con.execute("DELETE FROM kv WHERE key=?", (TOOL_PROJECTION_VERSION,))
+    original_events = db.rows("SELECT * FROM conversation_events ORDER BY id")
+    original_messages = db.rows("SELECT * FROM messages ORDER BY id")
+    original_checkpoint = repo.checkpoint("tool-session")
+    db.close()
+
+    if fail_after_migration:
+        def fail(stage):
+            if stage == "migrated":
+                raise RuntimeError("checkpoint migration failure")
+        with pytest.raises(RuntimeError) as error:
+            upgrade_database(legacy, checkpoint=fail, verify=False)
+        assert legacy.read_bytes() == Path(error.value.upgrade_report["backup"]).read_bytes()
+        with closing(sqlite3.connect(legacy)) as con:
+            assert con.execute("SELECT summary FROM conversation_checkpoints WHERE session='tool-session'"
+                               ).fetchone()[0] == "OLD_TOOL_DUMP"
+            assert not con.execute("SELECT 1 FROM kv WHERE key=?", (TOOL_PROJECTION_VERSION,)).fetchone()
+
+    report = upgrade_database(legacy, verify=False)
+    assert report["archived_tool_checkpoints"] == 1
+    with closing(sqlite3.connect(report["backup"])) as con:
+        assert con.execute("SELECT summary FROM conversation_checkpoints WHERE session='tool-session'"
+                           ).fetchone()[0] == "OLD_TOOL_DUMP"
+    db = Database(legacy.parent)
+    try:
+        repo = HistoryRepository(db)
+        assert repo.checkpoint("tool-session") is None
+        assert repo.checkpoint("chat-session")["summary"] == "CHAT_SUMMARY"
+        archived = db.rows("SELECT value FROM upgrade_archive WHERE category='tool_projection_checkpoint'")
+        assert [json.loads(row["value"]) for row in archived] == [original_checkpoint]
+        assert db.rows("SELECT * FROM conversation_events ORDER BY id") == original_events
+        assert db.rows("SELECT * FROM messages ORDER BY id") == original_messages
+        repo.compress("tool-session", event_id, event_id, "NEW_COMPACT", [])
+    finally:
+        db.close()
+    before = legacy.read_bytes()
+    assert upgrade_database(legacy, verify=False)["status"] == "unchanged"
+    assert legacy.read_bytes() == before
+
+
 def test_unknown_future_setting_is_archived_on_startup(legacy):
     from shrink.application import Application
     from shrink.services.upgrades import upgrade_database

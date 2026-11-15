@@ -49,13 +49,6 @@ class HistoryRepository:
                     con.execute(f"ALTER TABLE conversation_checkpoints ADD COLUMN {name} {definition}")
         if migrate:
             self.migrate()
-        with database.transaction() as con:
-            if not con.execute("SELECT 1 FROM kv WHERE key='history_tool_projection_v1'").fetchone():
-                # Summaries may contain old raw tool dumps. Originals and role events remain.
-                con.execute("DELETE FROM conversation_checkpoints WHERE session IN "
-                            "(SELECT session FROM conversation_events WHERE tool_calls IS NOT NULL)")
-                con.execute("INSERT INTO kv(key,value) VALUES('history_tool_projection_v1','true')")
-
     def session(self, identity, *, instance="", platform="", kind="", external_id="", source=""):
         with self.db.transaction() as con:
             con.execute("INSERT OR IGNORE INTO conversation_sessions"
