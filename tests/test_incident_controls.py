@@ -35,6 +35,21 @@ class Event:
         return True
 
 
+def test_task_statuses_are_scoped_to_owner_and_group():
+    from shrink.adapters.foreground import task_statuses
+    event = Event()
+    rows = [
+        dict(id="own", sender="123", session=event.unified_msg_origin, request="a", status="running"),
+        dict(id="elsewhere", sender="123", session="another", request="b", status="reconciling"),
+        dict(id="other-person", sender="456", session=event.unified_msg_origin, request="c", status="running"),
+    ]
+    operations = SimpleNamespace(list=lambda: rows)
+    assert [r["task_id"] for r in task_statuses(
+        operations, event, SimpleNamespace(private=False))] == ["own"]
+    assert [r["task_id"] for r in task_statuses(
+        operations, event, SimpleNamespace(private=True))] == ["own", "elsewhere"]
+
+
 @pytest.fixture
 def host_modules(monkeypatch):
     class Plain:
@@ -271,6 +286,17 @@ def test_foreground_request_loses_long_tools_but_shared_objects_survive():
     assert "transfer_to" not in req.system_prompt and "persona" in req.system_prompt
     assert background.get_tool("astrbot_execute_shell") is not None
     assert restrict(SimpleNamespace(func_tool=None, system_prompt=None)) == []
+
+
+def test_foreground_withholds_project_execution_and_unknown_external_tools():
+    from shrink.adapters.foreground import restrict
+    req = SimpleNamespace(system_prompt="", func_tool=Toolset(
+        "astrbot_file_read_tool", "astrbot_grep_tool", "shrink_computer",
+        "shrink_plugin_capability", "shirnk_crafttable", "external_new_tool",
+        "shrink_orchestrate", "shrink_lookup", "shrink_find_meme"))
+    restrict(req)
+    assert [tool.name for tool in req.func_tool.tools] == [
+        "shrink_orchestrate", "shrink_lookup", "shrink_find_meme"]
 
 
 def test_stop_request_goes_through_the_run_and_blocks_new_follow_ups():

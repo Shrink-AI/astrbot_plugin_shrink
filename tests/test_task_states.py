@@ -1,4 +1,5 @@
 import sqlite3
+import json
 
 import pytest
 
@@ -24,6 +25,20 @@ def task(states, state="queued"):
         with states.repository.db.transaction() as con:
             con.execute("UPDATE operation_tasks SET status=? WHERE id=?", (state, identity))
     return identity
+
+
+def test_large_tool_receipt_remains_complete_across_restart(states):
+    identity = task(states)
+    states.start(identity)
+    arguments = {"action": "sessions", "arguments": '{"device_id":"test-device"}'}
+    states.repository.record(identity, "tool_start:computer", result=json.dumps(arguments))
+    receipt = {"arguments": arguments, "result": "会话资料" * 20000, "error": False}
+    states.repository.record(identity, "tool_end:computer",
+                             result=json.dumps(receipt, ensure_ascii=False))
+    reloaded = TaskStates(Tasks(states.repository.db))
+    assert json.loads(reloaded.events(identity)[-1]["result"]) == receipt
+    assert not reloaded.unknown_tools(identity)
+    assert reloaded.failure(identity, TimeoutError()) == "retry_wait"
 
 
 @pytest.mark.parametrize("source,target", [(s, t) for s, targets in TRANSITIONS.items() for t in targets])

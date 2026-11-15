@@ -72,6 +72,8 @@ async def test_native_send_error_hook_does_not_record_unsent_assistant(world):
     assert [r["role"] for r in rows] == ["user"]
     assert world.app.turn_traces.since()[0]["outcome"] == "send_unknown"
     assert not world.app.inbox.repository.pending("chat")
+    pending = world.app.inbox.repository.pending("chat_send_unknown")
+    assert len(pending) == 1 and pending[0]["processed"] is None
 
 
 async def test_native_history_writer_is_disabled_for_owned_request(world):

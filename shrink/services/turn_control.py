@@ -33,5 +33,6 @@ def unsupported_claim(text, steps, task=None):
 
 def is_task_followup(text, decision=None):
     if decision and not decision["fallback"]:
-        return bool(decision["decision"]["task"] or decision["decision"]["intent"] == "supplement")
-    return bool(re.search(r"进度|干完|做完|处理完|同步|提交|推送|部署|停下来|别干了", text or ""))
+        return bool(decision["decision"]["task"] or decision["decision"]["intent"] == "supplement"
+                    or re.search(r"处理得怎么样|做到哪", text or ""))
+    return bool(re.search(r"进度|干完|做完|处理完|处理得怎么样|做到哪|同步|提交|推送|部署|停下来|别干了", text or ""))

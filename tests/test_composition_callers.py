@@ -22,7 +22,7 @@ async def test_timeout_notice_honors_silence_at_unified_entry(app, host_modules)
     assert app.database.rows("SELECT state FROM notification_receipts")[0]["state"] == "silent"
 
 
-async def test_correction_silence_clears_reply_instead_of_falling_back(app, host_modules):
+async def test_direct_correction_silence_returns_error_without_unsupported_claim(app, host_modules):
     text = "好，同步好了，等下直接推送到远端"
     app.expression = ExpressionService(
         app.state, SimpleNamespace(learned_persona=lambda: ""), None, AsyncMock(), app.tasks.error)
@@ -35,8 +35,9 @@ async def test_correction_silence_clears_reply_instead_of_falling_back(app, host
     response = SimpleNamespace(tools_call_name=[], role="assistant", completion_text=text,
                                result_chain=None)
     await adapter.response(event, response)
-    assert response.completion_text == ""
-    assert event.get_extra("shrink_finished").skip
+    from shrink.prompts import text as prompt_text
+    assert response.completion_text == prompt_text("reply.error").strip()
+    assert not event.get_extra("shrink_finished").skip
 
 
 async def test_task_silence_preserves_result_without_reexecuting(runtime, host_modules):

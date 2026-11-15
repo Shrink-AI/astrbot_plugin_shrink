@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 
 from ..prompts.chat import persona_prompt, rewrite_prompt, turn_prompt
+from ..prompts import text as prompt_text
 from ..text_rules import grams
 from .composition import ChatReply, Silent
 from .outbound_guard import unsafe
@@ -133,6 +134,14 @@ class ExpressionService:
         def invalid(value):
             return (unsafe(value, material, system, detail=explicit_detail)
                     or unsupported_claim(value, steps, execution))
+
+        if reason == "direct" and not meme_id and not humanize(text).strip():
+            revised = await self.rewrite("", user_text, form, recent)
+            text = humanize(revised).strip() if not invalid(revised) else ""
+            if not text:
+                from .composition import fallback
+                text = fallback((execution or {}).get("status")) or prompt_text("reply.error").strip()
+            return Finished(text, meme_id=meme_id)
 
         # Inspect raw material before cleaning too: stripping a leaked prompt must not make
         # its surviving prefix look like an approved answer.

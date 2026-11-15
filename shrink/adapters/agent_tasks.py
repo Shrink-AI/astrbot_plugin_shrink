@@ -3,6 +3,7 @@ import asyncio
 import copy
 import json
 import re
+import uuid
 
 from ..prompts import text as prompt_text
 from ..config import persona_prompt
@@ -39,8 +40,26 @@ class AgentTasks:
             raise ValueError('仅管理员可编排任务')
         if not isinstance(args, dict):
             raise ValueError('arguments必须是JSON对象')
+        if action == 'dispatch':
+            request = args.get('request', '')
+            if not isinstance(request, str) or not request.strip() or len(request) > 32000:
+                raise ValueError('任务内容为空或超过32000字')
+            previous = event.get_extra('shrink_dispatch')
+            if previous:
+                if previous['request'] != request:
+                    raise ValueError('本轮已提交任务，请先回复；补充要求使用原任务')
+                return previous['result']
+            self.task_states.capacity('agent')
+            agent = 'task_' + uuid.uuid4().hex[:12]
+            await self.create_agent({
+                'name': agent, 'instructions': request[:12000], 'tools': ['*'],
+            })
+            result = await self.submit_agent(event, agent, request)
+            event.set_extra('shrink_dispatch', {'request': request, 'result': result})
+            return result
         if action == 'guide':
             return {
+                'dispatch': {'request': '完整任务、当前授权范围、来源和验收要求；一次提交后台'},
                 'create': {'name': '任务用途英文名', 'persona': '角色人格、交流方式与职责边界',
                            'instructions': '职责、范围和验收',
                            'tools': ['从tools返回列表选取'], 'provider_id': 'shrink/gpt-6.1-sol'},

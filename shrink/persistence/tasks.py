@@ -121,12 +121,17 @@ class Tasks:
         return self.db.rows("SELECT * FROM operation_events WHERE task_id=? ORDER BY id", (task_id,))
 
     def record(self, task_id, action, plugin="", path="", result=""):
+        # Tool arguments and results are paired by their complete JSON envelopes.
+        # Cutting the serialized envelope makes a completed call look like an unknown write.
+        stored = str(result)
+        if not action.startswith(("tool_start:", "tool_end:")):
+            stored = stored[:40000]
         with self.transaction() as con:
             attempt = con.execute("SELECT id FROM task_attempts WHERE task_id=? "
                                   "ORDER BY rowid DESC LIMIT 1", (task_id,)).fetchone()
             cursor = con.execute("INSERT INTO operation_events(task_id,action,plugin,path,result,created,attempt_id)"
                                  " VALUES(?,?,?,?,?,?,?)",
-                                 (task_id, action, plugin, path, str(result)[:40000], time.time(),
+                                 (task_id, action, plugin, path, stored, time.time(),
                                   attempt[0] if attempt else ""))
             if con.execute("SELECT 1 FROM sqlite_master WHERE name='input_events'").fetchone():
                 from .inbox import input_id

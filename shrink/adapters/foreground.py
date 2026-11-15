@@ -5,21 +5,57 @@ group. Long execution belongs to background tasks, which get their tools from th
 definition and never pass through this module.
 """
 
-# Host tools that run for as long as the command does. Sandbox runtimes use the ipython name.
-LONG_RUNNING = frozenset({
-    "astrbot_execute_shell", "astrbot_execute_python", "astrbot_execute_ipython",
-    "astrbot_shell_session",
+CHAT_TOOLS = frozenset({
+    "shrink_lookup", "shrink_chat_history", "shrink_find_meme", "shrink_remember",
+    "shrink_orchestrate", "shrink_develop", "shrink_authorization",
 })
-# A synchronous handoff runs a whole subagent inside the turn, with no tool-call timeout.
-HANDOFF_PREFIX = "transfer_to_"
+MAX_TOOL_CALLS = 4
 
 
 def blocked(name):
-    return name in LONG_RUNNING or str(name).startswith(HANDOFF_PREFIX)
+    return name not in CHAT_TOOLS
+
+
+def finish_tools(event):
+    """Close the current batch of tool receipts before the next model call loses tools."""
+    if (not event.get_extra("shrink_background_task") and
+            len(event.get_extra("shrink_tools") or []) < MAX_TOOL_CALLS):
+        return
+    runner = event.get_extra("shrink_runner") or active_runner(event)
+    if runner is None or event.get_extra("shrink_tools_finishing"):
+        return
+    event.set_extra("shrink_tools_finishing", True)
+    original = runner._func_tool_for_provider
+
+    def without_tools():
+        # Emptying ToolSet inside on_tool_end makes the host drop the remaining results
+        # of a parallel batch. This boundary runs after all tool-call IDs are paired.
+        requests = [event.get_extra("shrink_foreground_request"), runner.req]
+        sets = [getattr(req, "func_tool", None) for req in requests]
+        sets.append(getattr(runner, "_skill_like_raw_tool_set", None))
+        for toolset in sets:
+            for tool in list(getattr(toolset, "tools", None) or []):
+                toolset.remove_tool(tool.name)
+        runner._func_tool_for_provider = original
+        return original()
+
+    runner._func_tool_for_provider = without_tools
+
+
+def task_statuses(operations, event, turn):
+    """A private status query may read this sender's tasks from their other chats."""
+    listing = getattr(operations, "list", None)
+    if not callable(listing):
+        return []
+    return [{"task_id": row["id"], "request": row["request"][:500],
+             "status": row["status"], "result": row.get("result", "")[:1200]}
+            for row in listing()
+            if row["sender"] == str(event.get_sender_id()) and
+            (row["session"] == event.unified_msg_origin or turn.private)][:4]
 
 
 def restrict(req, router_prompt=""):
-    """Drop long-running tools from this request only; returns the removed names.
+    """Keep only foreground chat and dispatch tools; returns the removed names.
 
     The host looks tools up in the request's own set when executing a call, so a tool removed
     here cannot run even if the model names it. Tool objects and other tool sets are untouched.

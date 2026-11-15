@@ -46,6 +46,24 @@ async def create(op, name='researcher'):
     return await op.create_agent({'name': name, 'instructions': '读取并总结资料', 'tools': ['read_source']})
 
 
+async def test_dispatch_submits_in_one_call_without_waiting_and_reuses_receipt(runtime):
+    op, event, _ = runtime
+    gate = asyncio.Event()
+    async def execute(*args):
+        await gate.wait()
+        return "完成"
+    op.invoke_agent = execute
+    try:
+        result = await op.orchestrate(event, "dispatch", {"request": "检查项目资料"})
+        again = await op.orchestrate(event, "dispatch", {"request": "检查项目资料"})
+        assert again["task_id"] == result["task_id"]
+        assert result["completed"] is False and len(op.list()) == 1
+        assert not gate.is_set()
+    finally:
+        gate.set()
+        await asyncio.gather(*op.running.values())
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('phase,expected', [('compose', 'interrupted'), ('send', 'unknown')])
 async def test_delivery_cancellation_is_persisted(runtime, monkeypatch, phase, expected):

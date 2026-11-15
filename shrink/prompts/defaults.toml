@@ -594,11 +594,11 @@ group = "工具说明"
 title = "编排子代理（shrink_orchestrate）"
 note = 'AstrBot 把这段交给模型，让它知道什么时候用这个工具。第一段是工具说明；“参数：”下面每行是“参数名：说明”，参数名和行数别改。'
 text = '''
-按任务自行创建原生子代理并编排后台执行。先guide/tools，再create和submit；后台自动回报。
+将任务交给原生子代理后台执行并自动回报。主会话直接dispatch，一次提交后回复；后台需要细分工作时再guide/tools/create/submit。
 
 参数：
-action：guide/tools/create/submit/list/status/append_input/ask_user/resume/cancel；省略时只返回guide用法，不创建或提交任务。
-arguments：JSON对象；create指定name,persona,instructions,tools,provider_id；submit指定agent,request,depends_on；append_input指定原task_id,text；若本轮决策已明确目标可省略task_id，目标不明先问。补充要求追加到运行中的原任务，不另开任务；ask_user指定一整轮question,context,options；等待用户答复的resume指定task_id,answer；其他操作见guide。'''
+action：dispatch/guide/tools/create/submit/list/status/append_input/ask_user/resume/cancel；省略时只返回guide用法，不创建或提交任务。
+arguments：JSON对象；dispatch指定request（完整任务、来源、授权范围与验收要求）；create指定name,persona,instructions,tools,provider_id；submit指定agent,request,depends_on；append_input指定原task_id,text；若本轮决策已明确目标可省略task_id，目标不明先问。补充要求追加到运行中的原任务，不另开任务；ask_user指定一整轮question,context,options；等待用户答复的resume指定task_id,answer；其他操作见guide。'''
 
 ["tool.shrink_native_manage"]
 group = "工具说明"
@@ -696,7 +696,7 @@ group = "后台任务与提醒"
 title = "管理员任务说明"
 note = '管理员跟石英说话时，附加在系统提示里，告诉它长任务和开发需求交给谁做。'
 text = '''
-管理员要求写插件、改插件或开发能力时，调用shrink_develop委派开发任务，后台任务没有总时长上限，单步瞬时故障默认最多自动重试3次。提交不等于完成，任务结束后你会据结果回复。资料收集、逐页反馈整理、去重建卡等多步任务，先用shrink_orchestrate guide/tools，按需求自己create原生子代理、选择工具与已配置模型（默认shrink/gpt-6.1-sol），再submit后台派工。独立工作可并行，汇总任务用depends_on连接前置结果。不必等用户说用子代理，也不要在主会话反复轮询。只处理当前授权项目；续做先核对已有卡片，未确认的写入不得盲目重试。不要自己用生产shell写插件或读凭据。资料先由你筛选整理再记录。用户交付资料或项目工具返回资料值得长期记住时，用shrink_curate_material提交正文与原始来源，由核心整理校验；不要直接写知识库。'''
+管理员要求写插件、改插件或开发能力时，调用shrink_develop委派开发任务，后台任务没有总时长上限，单步瞬时故障默认最多自动重试3次。提交不等于完成，任务结束后你会据结果回复。资料收集、逐页反馈整理、去重建卡等多步任务，在主会话用shrink_orchestrate dispatch提交完整请求、来源、授权范围和验收要求，默认由shrink/gpt-6.1-sol后台执行。后台协调者需要分工时再guide/tools/create/submit。独立工作可并行，汇总任务用depends_on连接前置结果。不必等用户说用子代理，也不要在主会话反复轮询。只处理当前授权项目；续做先核对已有卡片，未确认的写入不得盲目重试。不要自己用生产shell写插件或读凭据。资料先由你筛选整理再记录。用户交付资料或项目工具返回资料值得长期记住时，用shrink_curate_material提交正文与原始来源，由核心整理校验；不要直接写知识库。'''
 
 ["tasks.agent_policy"]
 group = "后台任务与提醒"

@@ -8,6 +8,25 @@ from tests import test_continuous_history
 app = pytest.fixture(test_continuous_history.app.__wrapped__)
 
 
+@pytest.mark.parametrize("raw", ["", "[[skip]]", "<think>仅有思考</think>", "。"])
+async def test_direct_empty_reply_recovers_once(app, raw):
+    app.expression.model = AsyncMock(return_value="听到了，谢谢你")
+    finished = await app.expression.finish(
+        raw, user_text="我喜欢你", form="short", reason="direct", recent=[])
+    assert finished.text == "听到了，谢谢你" and not finished.skip
+    assert finished.model_calls == 1
+
+
+@pytest.mark.parametrize("result", ["", "[[skip]]", TimeoutError()])
+async def test_direct_empty_recovery_failure_uses_existing_error_reply(app, result):
+    from shrink.prompts import text
+    app.expression.model = AsyncMock(side_effect=result) if isinstance(result, Exception) else AsyncMock(return_value=result)
+    finished = await app.expression.finish(
+        "", user_text="在吗", form="short", reason="direct", recent=[])
+    assert finished.text == text("reply.error").strip() and not finished.skip
+    assert finished.model_calls == 1
+
+
 async def test_clean_tool_reply_is_final_without_another_model_call(app):
     app.expression.model = AsyncMock(return_value="不应调用")
     text = "好嘞，查到了"
