@@ -12,6 +12,7 @@ from ..persistence.tasks import Tasks
 from ..services.task_states import TaskStates, ACTIVE
 from ..services.task_execution import AwaitingUserInput
 from ..services.task_inputs import TaskInputs
+from ..services.scheduling import shared_lock
 
 
 class AgentTasks:
@@ -179,7 +180,7 @@ class AgentTasks:
         provider = args.get('provider_id', 'shrink/gpt-6.1-sol')
         if not any(p.get('id') == provider for p in self.context.get_config().get('provider', [])):
             raise ValueError('模型必须是已配置provider_id')
-        async with self.agent_config_lock:
+        async with shared_lock(self.agent_config_lock):
             config = await self.app.native.call('subagents', 'list')
             agents = list(config.get('agents', []))
             existing = next((a for a in agents if a.get('name') == name), None)

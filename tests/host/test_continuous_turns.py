@@ -24,7 +24,7 @@ async def test_c01_second_native_turn_contains_first_roles_tools_and_stable_syst
     assert text(first[0]) == text(second[0]) and first[0]["role"] == "system"
     assert "本轮参考资料" not in text(second[0])
     assert any(m["role"] == "user" and "查下记忆" in text(m) for m in second)
-    assert any(m["role"] == "assistant" and text(m) == "整理过的结果" for m in second)
+    assert any(m["role"] == "assistant" and text(m) == "查到了" for m in second)
     calls = [m for m in second if m.get("tool_calls")]
     assert len(calls) == 1 and calls[0]["tool_calls"][0]["function"]["name"] == "shrink_lookup"
     result = next(m for m in second if m["role"] == "tool")

@@ -16,10 +16,12 @@ def test_d01_offline_script_scores_synthetic_backends_without_database(tmp_path)
         "--fixtures", str(root / "tests/fixtures/decision_responses.json"),
     ], cwd=tmp_path, text=True, capture_output=True, check=True, encoding="utf-8")
     report = json.loads(result.stdout)
-    assert report["haiku"]["samples"] == 3
+    count = len(samples(root / "tests/fixtures/decisions.jsonl"))
+    assert count >= 13
+    assert report["haiku"]["samples"] == count
     assert set(report["haiku"]["accuracy"].values()) == {1.0}
-    assert report["laya"]["accuracy"]["association"] == pytest.approx(2 / 3)
-    assert report["laya"]["accuracy"]["notify"] == pytest.approx(2 / 3)
+    assert report["laya"]["accuracy"]["association"] == pytest.approx((count - 1) / count)
+    assert report["laya"]["accuracy"]["notify"] == pytest.approx((count - 1) / count)
     assert report["haiku"]["latency_seconds"]["max"] >= report["haiku"]["latency_seconds"]["p50"]
     assert list(tmp_path.iterdir()) == []
 
@@ -29,7 +31,7 @@ async def test_offline_errors_count_as_failed_predictions():
     async def invalid(payload):
         return "not json"
     report = await evaluate(rows, {"invalid": invalid})
-    assert report["invalid"]["failures"] == 3
+    assert report["invalid"]["failures"] == len(rows)
     assert set(report["invalid"]["accuracy"].values()) == {0}
 
 

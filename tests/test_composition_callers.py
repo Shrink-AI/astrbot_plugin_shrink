@@ -7,7 +7,7 @@ import pytest
 
 from shrink.adapters.agent_tasks import AgentTasks
 from shrink.services.composition import SILENT
-from shrink.services.expression import Finished
+from shrink.services.expression import ExpressionService
 from tests.test_agent_tasks import create, runtime  # noqa: F401
 from tests.test_incident_controls import Event, app, host_modules  # noqa: F401
 
@@ -24,7 +24,9 @@ async def test_timeout_notice_honors_silence_at_unified_entry(app, host_modules)
 
 async def test_correction_silence_clears_reply_instead_of_falling_back(app, host_modules):
     text = "好，同步好了，等下直接推送到远端"
-    app.expression = SimpleNamespace(finish=AsyncMock(return_value=Finished(text)))
+    app.expression = ExpressionService(
+        app.state, SimpleNamespace(learned_persona=lambda: ""), None, AsyncMock(), app.tasks.error)
+    app.expression.outbound = app.outbound
     app.messages = SimpleNamespace(recent_bot=Mock(return_value=[]))
     app.outbound.compose.return_value = SILENT
     adapter = host_modules.ConversationAdapter(app, "test")

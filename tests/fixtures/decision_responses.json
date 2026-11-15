@@ -1,12 +1,471 @@
 {
   "haiku": {
-    "synthetic-1": {"intent":"query","route":"reply","conversation":"room","topic":null,"task":null,"evidence":["synthetic-1"],"capability_candidates":["weather"],"notify":"normal","confidence":0.8},
-    "synthetic-2": {"intent":"chat","route":"silent","conversation":"room","topic":null,"task":null,"evidence":["synthetic-2"],"capability_candidates":[],"notify":"silent","confidence":0.7},
-    "synthetic-3": {"intent":"supplement","route":"attach_task","conversation":"room","topic":null,"task":"task1","evidence":["synthetic-3","task1"],"capability_candidates":["shrink_orchestrate"],"notify":"merge","confidence":0.8}
+    "synthetic-1": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-1"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-2": {
+      "intent": "chat",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-2"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.7
+    },
+    "synthetic-3": {
+      "intent": "supplement",
+      "route": "attach_task",
+      "conversation": "room",
+      "topic": null,
+      "task": "task1",
+      "evidence": [
+        "synthetic-3",
+        "task1"
+      ],
+      "capability_candidates": [
+        "shrink_orchestrate"
+      ],
+      "notify": "merge",
+      "confidence": 0.8
+    },
+    "synthetic-4": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "private-synthetic",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-4"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-5": {
+      "intent": "task",
+      "route": "create_task",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-5"
+      ],
+      "capability_candidates": [
+        "shrink_orchestrate"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-6": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-6"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-7": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": "topic-camp",
+      "task": null,
+      "evidence": [
+        "synthetic-7"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-8": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-8"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-9": {
+      "intent": "query",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-9"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.8
+    },
+    "synthetic-10": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-10"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-11": {
+      "intent": "supplement",
+      "route": "attach_task",
+      "conversation": "room",
+      "topic": null,
+      "task": "task-bound",
+      "evidence": [
+        "synthetic-11"
+      ],
+      "capability_candidates": [
+        "shrink_orchestrate"
+      ],
+      "notify": "merge",
+      "confidence": 0.8
+    },
+    "synthetic-12": {
+      "intent": "supplement",
+      "route": "ask",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-12"
+      ],
+      "capability_candidates": [],
+      "notify": "action",
+      "confidence": 0.8
+    },
+    "synthetic-13": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": "task-await",
+      "evidence": [
+        "synthetic-13"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-14": {
+      "intent": "task",
+      "route": "create_task",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-14"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-15": {
+      "intent": "query",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-15"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.8
+    },
+    "synthetic-16": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "private-synthetic",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-16"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-17": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-17"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.9
+    }
   },
   "laya": {
-    "synthetic-1": {"intent":"query","route":"reply","conversation":"room","topic":null,"task":null,"evidence":["synthetic-1"],"capability_candidates":["weather"],"notify":"normal","confidence":0.9},
-    "synthetic-2": {"intent":"chat","route":"silent","conversation":"room","topic":null,"task":null,"evidence":["synthetic-2"],"capability_candidates":[],"notify":"silent","confidence":0.6},
-    "synthetic-3": {"intent":"supplement","route":"ask","conversation":"room","topic":null,"task":null,"evidence":["synthetic-3"],"capability_candidates":[],"notify":"action","confidence":0.55}
+    "synthetic-1": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-1"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.9
+    },
+    "synthetic-2": {
+      "intent": "chat",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-2"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.6
+    },
+    "synthetic-3": {
+      "intent": "supplement",
+      "route": "ask",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-3"
+      ],
+      "capability_candidates": [],
+      "notify": "action",
+      "confidence": 0.55
+    },
+    "synthetic-4": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "private-synthetic",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-4"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-5": {
+      "intent": "task",
+      "route": "create_task",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-5"
+      ],
+      "capability_candidates": [
+        "shrink_orchestrate"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-6": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-6"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-7": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": "topic-camp",
+      "task": null,
+      "evidence": [
+        "synthetic-7"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-8": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-8"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-9": {
+      "intent": "query",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-9"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.8
+    },
+    "synthetic-10": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-10"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-11": {
+      "intent": "supplement",
+      "route": "attach_task",
+      "conversation": "room",
+      "topic": null,
+      "task": "task-bound",
+      "evidence": [
+        "synthetic-11"
+      ],
+      "capability_candidates": [
+        "shrink_orchestrate"
+      ],
+      "notify": "merge",
+      "confidence": 0.8
+    },
+    "synthetic-12": {
+      "intent": "supplement",
+      "route": "ask",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-12"
+      ],
+      "capability_candidates": [],
+      "notify": "action",
+      "confidence": 0.8
+    },
+    "synthetic-13": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": "task-await",
+      "evidence": [
+        "synthetic-13"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-14": {
+      "intent": "task",
+      "route": "create_task",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-14"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-15": {
+      "intent": "query",
+      "route": "silent",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-15"
+      ],
+      "capability_candidates": [],
+      "notify": "silent",
+      "confidence": 0.8
+    },
+    "synthetic-16": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "private-synthetic",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-16"
+      ],
+      "capability_candidates": [
+        "weather"
+      ],
+      "notify": "normal",
+      "confidence": 0.8
+    },
+    "synthetic-17": {
+      "intent": "query",
+      "route": "reply",
+      "conversation": "room",
+      "topic": null,
+      "task": null,
+      "evidence": [
+        "synthetic-17"
+      ],
+      "capability_candidates": [],
+      "notify": "normal",
+      "confidence": 0.9
+    }
   }
 }

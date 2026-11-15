@@ -49,8 +49,37 @@ def capabilities(text, catalog, limit=5):
     return [name for _, name in sorted(scored, key=lambda pair: (-pair[0], pair[1]))[:limit]]
 
 
+def decision_payload(raw):
+    if not isinstance(raw, str):
+        return raw
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as error:
+        decoder = json.JSONDecoder()
+        objects, offset = [], 0
+        while (start := raw.find("{", offset)) >= 0:
+            try:
+                value, offset = decoder.raw_decode(raw, start)
+            except json.JSONDecodeError:
+                raise error
+            objects.append(value)
+        if len(objects) != 1:
+            raise error
+        return objects[0]
+
+
 def validate_decision(raw, event, candidates, context):
-    value = Decision.model_validate(json.loads(raw) if isinstance(raw, str) else raw)
+    data = decision_payload(raw)
+    allowed = {event["id"]}
+    for group in ("tasks", "topics", "people"):
+        allowed.update(item["id"] for item in candidates[group])
+    if isinstance(data, dict):
+        evidence = data.get("evidence")
+        if isinstance(evidence, list) and len(evidence) <= 32 and all(isinstance(item, str) for item in evidence):
+            # Keep the schema bound while reserving a reference to the actual input.
+            evidence = [item for item in evidence if item in allowed and item != event["id"]]
+            data = {**data, "evidence": [event["id"], *evidence[:31]]}
+    value = Decision.model_validate(data)
     if value.conversation != event["session"]:
         raise ValueError("模型不能覆盖会话")
     tasks = {item["id"]: item for item in candidates["tasks"]}
@@ -60,14 +89,8 @@ def validate_decision(raw, event, candidates, context):
         raise ValueError("模型不能覆盖已有任务关联")
     if value.topic is not None and value.topic not in {item["id"] for item in candidates["topics"]}:
         raise ValueError("话题不在候选中")
-    allowed = {event["id"]}
-    for group in ("tasks", "topics", "people"):
-        allowed.update(item["id"] for item in candidates[group])
     names = {item["name"] for item in candidates["capabilities"]}
-    if not set(value.evidence) <= allowed or not set(value.capability_candidates) <= names:
-        raise ValueError("依据或能力不在候选中")
-    if event["id"] not in value.evidence:
-        raise ValueError("决策依据缺少当前输入引用")
+    value.capability_candidates = [name for name in value.capability_candidates if name in names]
     if value.route == "stop":
         raise ValueError("停止只能由规则确认")
     if value.route in {"create_task", "attach_task"} and not context.admin:
@@ -82,8 +105,8 @@ def validate_decision(raw, event, candidates, context):
         raise ValueError("已有任务关联不能新建任务")
     if value.route == "silent" and (context.private or context.direct):
         raise ValueError("明确呼叫不能静默")
-    if value.route == "silent" and value.notify != "silent":
-        raise ValueError("静默路由不能通知")
+    if value.route == "silent":
+        value.notify = "silent"
     return value
 
 
@@ -210,7 +233,8 @@ class Decisions:
             try:
                 if backend is None:
                     raise ValueError("backend_unavailable")
-                raw = await asyncio.wait_for(backend(payload), self.state.settings.decision_timeout)
+                scheduled = self.scheduling.wrap(backend, "decision") if hasattr(self, "scheduling") else backend
+                raw = await asyncio.wait_for(scheduled(payload), self.state.settings.decision_timeout)
                 decision = validate_decision(raw, event, candidates, context)
                 reason = "validated"
             except Exception as exc:

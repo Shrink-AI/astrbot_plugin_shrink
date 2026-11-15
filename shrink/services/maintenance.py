@@ -347,7 +347,7 @@ class CapabilityMaintenance:
                             tasks = [t for t in self.repository.tasks() if t.get("agent") == name]
                             if tasks and all(t["status"] in TERMINAL for t in tasks):
                                 # A completed task alone does not prove a reusable definition obsolete.
-                                suggestion = await ask_json(self.app.expression.model,
+                                suggestion = await ask_json(self.app.scheduling.wrap(self.app.expression.model, "model"),
                                     render("maintenance.review", evidence=json.dumps({
                                         "definition": value, "completed_tasks": len(tasks),
                                         "statuses": [t["status"] for t in tasks]}, ensure_ascii=False)),

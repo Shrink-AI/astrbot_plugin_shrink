@@ -32,8 +32,16 @@ class Settings(BaseModel):
     meme_cooldown: int = Field(120, ge=0, le=86400)
     meme_repeat_cooldown: int = Field(1800, ge=0, le=604800)
     recall_count: int = Field(6, ge=1, le=20)
+    foreground_retrieval_timeout: float = Field(
+        10, gt=0, le=300, description="前台知识库检索预算（秒），线上测量后再调")
+    foreground_rerank_timeout: float = Field(
+        20, gt=0, le=300, description="前台空闲重排预算（秒），线上测量后再调")
+    foreground_grilling_timeout: float = Field(
+        0, ge=0, le=300, description="前台 grilling 准备预算（秒），0 不额外限时；线上测量后再调")
     # 0.4: conversation context, memory upkeep and human-like delivery.
     context_budget: int = Field(4000, ge=1000, le=20000)
+    history_compress_tokens: int = Field(128000, ge=1000, le=2000000)
+    history_retain_ratio: float = Field(.65, ge=.1, le=.9)
     memory_budget: int = Field(800, ge=200, le=4000)
     digest_enabled: bool = True
     verify_enabled: bool = True
@@ -51,4 +59,6 @@ class Settings(BaseModel):
     # 0.6: tools and experience.
     skills_enabled: bool = True
     task_retry_limit: int = Field(3, ge=0, le=3)
+    notification_max_delay: float = Field(
+        60, ge=0, le=86400, description="必要通知因前台活跃而让路的最长时间（秒）")
     sandbox_url: str = "http://shrink-sandbox:8765"

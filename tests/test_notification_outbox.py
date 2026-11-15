@@ -366,3 +366,86 @@ async def test_foreground_sending_recovery_never_reexpresses_under_pending_user_
     await box.pump()
     assert box.repository.get(receipt)["state"] == "unknown"
     assert states.task(identity)["delivery"] == "unknown" and not sends
+
+
+async def test_expression_queue_rechecks_new_input_before_starting_model(app, notices):  # noqa: F811
+    _, _, sends = notices
+    box = app.notification_outbox
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def expression(*args):
+        entered.set()
+        await release.wait()
+        return "这部分核对过了"
+    app.expression.model.side_effect = expression
+    one = box.submit(SCOPE, "one", {"status": "completed"})
+    two = box.submit(SCOPE, "two", {"status": "completed"})
+    first = asyncio.create_task(box.deliver(one["id"]))
+    second = None
+    try:
+        await entered.wait()
+        second = asyncio.create_task(box.deliver(two["id"]))
+        await asyncio.wait_for(box.scheduling.queued["expression"].wait(), 1)
+        app.inbox.event(session=SCOPE["session"], sender="100", external_id="new-input",
+                        source="platform", route="chat", text="等等")
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 2)
+        assert not sends and app.expression.model.await_count == 1
+        assert box.repository.get(two["id"])["state"] == "pending"
+    finally:
+        release.set()
+        await asyncio.gather(*(t for t in (first, second) if t is not None), return_exceptions=True)
+
+
+@pytest.mark.parametrize("kind", ["cancelled", "revocation", "question", "blocker"])
+async def test_all_urgent_categories_bypass_occupied_expression_quota(app, notices, kind):  # noqa: F811
+    _, _, sends = notices
+    box = app.notification_outbox
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+    async def expression(*args):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return "当前状态核对过了"
+    app.expression.model.side_effect = expression
+    normal = box.submit(SCOPE, "normal-quota", {"status": "completed"})
+    first = asyncio.create_task(box.deliver(normal["id"]))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        urgent = box.submit(SCOPE, "urgent-quota", {"status": "waiting_user"}, kind=kind)
+        assert await asyncio.wait_for(box.deliver(urgent["id"]), 1)
+        assert len(sends) == 1 and not first.done() and not release.is_set()
+    finally:
+        release.set()
+        await first
+
+
+async def test_foreground_classifier_does_not_wait_for_notification_value_model(app, notices):  # noqa: F811
+    from shrink.services.decisions import DecisionContext
+    box = app.notification_outbox
+    box.merge_seconds = 0
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def backend(payload):
+        notification = payload["event"]["source"] == "notification"
+        if notification:
+            entered.set()
+            await release.wait()
+        return {"intent": "event" if notification else "query", "route": "silent" if notification else "reply",
+                "conversation": payload["event"]["session"], "topic": None, "task": None,
+                "evidence": [payload["event"]["id"]], "capability_candidates": [],
+                "notify": "silent" if notification else "normal", "confidence": 1.0}
+    app.decisions.backends[app.state.settings.decision_backend] = backend
+    row = box.submit(SCOPE, "value-model", {"status": "running"}, kind="progress")
+    worker = asyncio.create_task(box.deliver(row["id"]))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        incoming, _ = app.inbox.event(session=SCOPE["session"], sender="100", external_id="classify-chat",
+                                      source="platform", route="chat", text="查一下当前天气")
+        result = await asyncio.wait_for(
+            app.decisions.decide(incoming["id"], DecisionContext(direct=True)), 1)
+        assert not result["fallback"] and not worker.done() and not release.is_set()
+    finally:
+        release.set()
+        await worker

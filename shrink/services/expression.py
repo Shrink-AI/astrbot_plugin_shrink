@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from ..prompts.chat import persona_prompt, rewrite_prompt, turn_prompt
 from ..text_rules import grams
 from .composition import ChatReply, Silent
+from .outbound_guard import unsafe
+from .turn_control import unsupported_claim
+from .scheduling import in_lane, measure_expression, EXPRESSION_CALLS
 from .reply_text import (
     drop_meta_sentences,
     humanize,
@@ -21,6 +24,7 @@ from .reply_text import (
 FORM_WEIGHTS = (("tiny", 0.4), ("short", 0.4), ("normal", 0.2))
 FORM_LIMIT = {"tiny": 12, "short": 30, "normal": 60, "meme": 12}
 HARD_LIMIT = 60
+RESULT_LIMIT = 8000
 
 
 def wants_detail(text):
@@ -37,6 +41,12 @@ def wants_detail(text):
             re.I,
         )
     )
+
+
+def allows_tool_quotes(text):
+    return wants_detail(text) or bool(re.search(
+        r"详情|(写|给|生成|提供|贴|看).{0,12}(代码|日志|配置|工具.{0,6}(内容|结果))",
+        text or ""))
 
 
 def choose_form(text, random_value, meme_available=False, meme_roll=1.0):
@@ -76,6 +86,7 @@ class Finished:
     second: str = ""
     skip: bool = False
     meme_id: int | None = None
+    model_calls: int = 0
 
 
 class ExpressionService:
@@ -104,6 +115,8 @@ class ExpressionService:
     def prompt(self, **parts):
         return turn_prompt(**parts)
 
+    @in_lane("chat")
+    @measure_expression
     async def finish(self, raw, *, user_text, form, reason, recent, context=None, execution=None):
         """Clean a model reply. Never returns reasoning, narration or markers."""
         text = strip_reasoning(raw or "")
@@ -111,20 +124,52 @@ class ExpressionService:
         if skip and reason in ("engaged", "spontaneous"):
             return Finished("", skip=True)
         text = drop_meta_sentences(text) if looks_like_meta(text) else text
-        if form == "tool_result":
+        detail = form in {"tool_result", "detail"}
+        explicit_detail = form == "detail" or allows_tool_quotes(user_text)
+        system = persona_prompt(self.personas.learned_persona())
+        steps = (execution or {}).get("tool_steps", [])
+        material = execution or {}
+
+        def invalid(value):
+            return (unsafe(value, material, system, detail=explicit_detail)
+                    or unsupported_claim(value, steps, execution))
+
+        # Inspect raw material before cleaning too: stripping a leaked prompt must not make
+        # its surviving prefix look like an approved answer.
+        recovered = invalid(raw or "") or invalid(text)
+        if recovered:
             if getattr(self, "outbound", None):
-                facts = ChatReply(text, execution)
-                text = await self.outbound.compose(facts, request=user_text, kind="tool_result",
-                                                   context=context, recent=recent)
+                unsupported = unsupported_claim(raw, steps, execution)
+                facts = ChatReply("" if unsupported else text,
+                                  execution or ({"status": "unverified"} if unsupported else None))
+                text = await self.outbound.compose(
+                    facts, request=user_text, kind="execution_status" if unsupported
+                    else "tool_result", context=context, recent=recent, recovery=True,
+                    required=reason == "direct", detail=explicit_detail,
+                    instruction=("只说明可确认的状态与缺少的回执；自然、简短、温和，不责备用户；"
+                                 "没有记录不能推断未执行，也不能声称完成，不承诺自动重试。")
+                    if unsupported else "")
                 if isinstance(text, Silent):
                     return Finished("", skip=True)
-            return Finished(strip_reasoning(text).strip(), meme_id=meme_id)
-        if form == "detail":
-            return Finished(strip_reasoning(text).strip(), meme_id=meme_id)
+            else:
+                text = await self.rewrite(text, user_text, form, recent)
+            text = strip_reasoning(text or "").strip()
+            if invalid(text):
+                from .composition import fallback
+                text = (fallback((execution or {}).get("status")) or "") if reason == "direct" else ""
+                if invalid(text):
+                    text = ""
+            if not text:
+                return Finished("", skip=True)
+            meme_id = None
+        if detail:
+            return Finished(text[:RESULT_LIMIT].rstrip("。"), meme_id=meme_id)
         flat = re.sub(r"\s+", " ", text).strip()
-        limit = FORM_LIMIT.get(form, HARD_LIMIT)
-        if flat and (len(flat) > max(limit * 2, HARD_LIMIT) or repeats_recent(flat, recent)):
-            flat = await self.rewrite(flat, user_text, form, recent)
+        if not recovered and (len(flat) > max(FORM_LIMIT.get(form, HARD_LIMIT) * 2, HARD_LIMIT)
+                              or repeats_recent(flat, recent)):
+            revised = await self.rewrite(flat, user_text, form, recent)
+            if not invalid(revised):
+                flat = revised
         if len(flat) > HARD_LIMIT:
             flat = self.trim(flat)
         flat = humanize(flat)
@@ -139,6 +184,9 @@ class ExpressionService:
 
     async def rewrite(self, text, user_text, form, recent):
         try:
+            counter = EXPRESSION_CALLS.get()
+            if counter is not None:
+                counter[0] += 1
             revised = await asyncio.wait_for(
                 self.model(
                     rewrite_prompt(text, user_text, form, " / ".join(recent[:3])),
@@ -157,9 +205,15 @@ class ExpressionService:
 
     @staticmethod
     def trim(text):
-        """Keep whole sentences within the hard limit; never cut a fact mid-sentence."""
+        """Prefer a whole sentence; an unbroken sentence still obeys the hard limit."""
         for sentence in re.findall(r"[^。！？!?\n]+[。！？!?]?", text):
             sentence = sentence.strip()
             if 0 < len(sentence) <= HARD_LIMIT and not looks_like_meta(sentence):
                 return sentence
-        return ""
+        prefix = text[:HARD_LIMIT]
+        boundaries = list(re.finditer(r"[，、；：\s]", prefix))
+        if boundaries:
+            clause = prefix[:boundaries[-1].start()].rstrip()
+            if clause:
+                return clause
+        return prefix

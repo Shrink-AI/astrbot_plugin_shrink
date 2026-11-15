@@ -9,6 +9,10 @@ QUIET = {"tool_start", "tool_end", "file_read", "log", "auto_approval", "recover
 URGENT = {"cancelled", "revocation", "question", "blocker"}
 
 
+def necessary(kind):
+    return kind not in QUIET | {"progress", "tool_progress", "foreground"}
+
+
 async def select(decisions, row):
     started = time.monotonic()
     kind = row["kind"]
@@ -28,7 +32,8 @@ async def select(decisions, row):
                              "direct": False, "private": False, "may_create_task": False, "fixed_task": ""}}
         try:
             from .decisions import DecisionContext, validate_decision
-            raw = await asyncio.wait_for(model(payload), decisions.state.settings.decision_timeout)
+            scheduled = decisions.scheduling.wrap(model, "decision") if hasattr(decisions, "scheduling") else model
+            raw = await asyncio.wait_for(scheduled(payload), decisions.state.settings.decision_timeout)
             value = validate_decision(raw, event, payload["candidates"], DecisionContext())
             if value.notify not in {"silent", "merge"}:
                 raise ValueError("进展不能提升为关键通知")

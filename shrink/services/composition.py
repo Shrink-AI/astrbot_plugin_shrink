@@ -1,5 +1,10 @@
 """Explicit provenance and a silence result that cannot become an empty reply."""
 from dataclasses import dataclass
+from contextvars import ContextVar
+
+
+# Set only around a claimed queue delivery; foreground/compatibility calls see None.
+NOTIFICATION = ContextVar("notification", default=None)
 
 
 @dataclass(frozen=True)
@@ -20,6 +25,7 @@ def fallback(status):
     if not isinstance(status, str):
         return None
     return {
+        "unverified": "这一步的结果还没确认，执行记录已保留",
         "queued": "任务已接收，正在等待执行。",
         "submitted": "任务已提交，完成情况还未确认。",
         "running": "任务仍在执行，结果还未确认。",

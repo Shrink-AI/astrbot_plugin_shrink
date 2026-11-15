@@ -36,6 +36,17 @@ class HistoryRepository:
                   end_event INTEGER NOT NULL,summary TEXT NOT NULL,message_refs TEXT NOT NULL,
                   created REAL NOT NULL,UNIQUE(session,end_event));
             """)
+            columns = {r["name"] for r in con.execute("PRAGMA table_info(conversation_checkpoints)")}
+            for name, definition in {
+                "window_budget": "INTEGER NOT NULL DEFAULT 0",
+                "summary_tokens": "INTEGER NOT NULL DEFAULT 0",
+                "summary_state": "TEXT NOT NULL DEFAULT 'ready'",
+                "summary_attempts": "INTEGER NOT NULL DEFAULT 0",
+                "summary_next_run": "REAL NOT NULL DEFAULT 0",
+                "summary_claim": "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in columns:
+                    con.execute(f"ALTER TABLE conversation_checkpoints ADD COLUMN {name} {definition}")
         if migrate:
             self.migrate()
 
@@ -126,6 +137,53 @@ class HistoryRepository:
         rows = self.db.rows(
             "SELECT * FROM conversation_checkpoints WHERE session=? AND (? IS NULL OR id=?) "
             "ORDER BY end_event DESC LIMIT 1", (session, identity, identity))
+        return rows[0] if rows else None
+
+    def window(self, session):
+        rows = self.db.rows("SELECT * FROM conversation_checkpoints WHERE session=? AND window_budget>0 "
+                            "ORDER BY end_event DESC LIMIT 1", (session,))
+        return rows[0] if rows else None
+
+    def reserve(self, session, start, end, refs, budget, summary_tokens):
+        with self.db.transaction() as con:
+            con.execute("INSERT INTO conversation_checkpoints"
+                        "(session,start_event,end_event,summary,message_refs,created,window_budget,"
+                        "summary_tokens,summary_state) VALUES(?,?,?,'',?,?,?,?,'pending') "
+                        "ON CONFLICT(session,end_event) DO UPDATE SET "
+                        "start_event=excluded.start_event,summary='',message_refs=excluded.message_refs,"
+                        "window_budget=excluded.window_budget,summary_tokens=excluded.summary_tokens,"
+                        "summary_state='pending',summary_attempts=0,summary_next_run=0,summary_claim=''",
+                        (session, start, end, json.dumps(refs), time.time(), budget, summary_tokens))
+        return self.window(session)
+
+    def pending(self):
+        return self.db.rows("SELECT * FROM conversation_checkpoints WHERE summary_state='pending' "
+                            "ORDER BY summary_next_run,id")
+
+    def recover_summaries(self, limit):
+        with self.db.transaction() as con:
+            con.execute("UPDATE conversation_checkpoints SET summary_state=CASE "
+                        "WHEN summary_attempts>=? THEN 'failed' ELSE 'pending' END,summary_claim='' "
+                        "WHERE summary_state='running'", (limit,))
+
+    def claim_summary(self, identity, claim):
+        with self.db.transaction() as con:
+            return con.execute("UPDATE conversation_checkpoints SET summary_state='running',"
+                               "summary_attempts=summary_attempts+1,summary_claim=? "
+                               "WHERE id=? AND summary_state='pending'", (claim, identity)).rowcount == 1
+
+    def finish_summary(self, identity, claim, *, summary="", state="ready", next_run=0):
+        with self.db.transaction() as con:
+            return con.execute("UPDATE conversation_checkpoints SET summary=?,summary_state=?,"
+                               "summary_next_run=?,summary_claim='' WHERE id=? AND summary_claim=? "
+                               "AND summary_state='running'",
+                               (summary, state, next_run, identity, claim)).rowcount == 1
+
+    def previous_summary(self, checkpoint):
+        rows = self.db.rows("SELECT * FROM conversation_checkpoints WHERE session=? AND end_event<? "
+                            "AND start_event<=? AND summary_state='ready' AND summary!='' "
+                            "ORDER BY end_event DESC LIMIT 1",
+                            (checkpoint["session"], checkpoint["end_event"], checkpoint["start_event"]))
         return rows[0] if rows else None
 
     def compress(self, session, start, end, summary, refs):

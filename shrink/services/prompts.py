@@ -9,6 +9,7 @@ from ..config import persona_prompt
 from ..prompts.chat import turn_prompt
 from .expression import choose_form
 from .perception import Turn
+from .scheduling import in_lane
 
 # Prompts that are part of the persona AstrBot keeps; changing them re-syncs it.
 PERSONA_KEYS = {"chat.persona", "chat.style_header"}
@@ -84,6 +85,7 @@ class PromptService:
             listener(key)
 
     # ---- trial ---------------------------------------------------------------------------------
+    @in_lane("interactive")
     async def trial(self, app, source, drafts, limit=4):
         """Replay the last few messages 石英 answered in ``source`` with the saved prompts and
         with ``drafts``, side by side. Nothing is sent or stored."""
@@ -163,7 +165,8 @@ class PromptService:
             allow_skip=reason != "direct",
         )
         started = time.monotonic()
-        raw = await asyncio.wait_for(app.expression.model(turn.text, system), 90)
+        model = app.scheduling.wrap(app.expression.model, "model")
+        raw = await asyncio.wait_for(model(turn.text, system), 90)
         finished = await app.expression.finish(
             raw, user_text=turn.text, form=form, reason=reason,
             recent=app.messages.recent_bot(turn.source, 3),

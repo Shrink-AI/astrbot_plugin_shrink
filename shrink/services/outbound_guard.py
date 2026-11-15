@@ -4,17 +4,23 @@ import re
 
 from .composition import SILENT, fallback
 from ..prompts import render
+from .reply_text import PROMPT_LEAK
 
 
-def unsafe(text, facts, system=""):
+def unsafe(text, facts, system="", *, detail=False, readable_fallback=False):
     stripped = text.strip()
     try:
         if isinstance(json.loads(stripped), (dict, list)):
             return True
     except (ValueError, TypeError):
         pass
-    if re.search(r"<\|(?:im_start|im_end|system|assistant)|</?(?:system|tool_result|instructions)>|"
-                 r"Traceback \(most recent call last\)|^\s*(?:system|developer)\s*:", text, re.I | re.M):
+    prose = re.sub(r"```.*?```", "", text, flags=re.S) if detail else text
+    if PROMPT_LEAK.search(prose) or (not detail and re.search(r'\{\s*\\?"[^"\n]+\\?"\s*:', text)):
+        return True
+    if re.search(r"<\|(?:im_start|im_end|system|assistant)|</?(?:system|tool_result|instructions|facts|context|recent)>|"
+                 r"^\s*(?:system|developer)\s*:", text, re.I | re.M):
+        return True
+    if not detail and re.search(r"Traceback \(most recent call last\)", text, re.I):
         return True
     if any(len(line.strip()) > 20 and line.strip() in stripped for line in system.splitlines()):
         return True
@@ -27,7 +33,10 @@ def unsafe(text, facts, system=""):
         elif isinstance(value, list):
             for entry in value:
                 yield from raw(entry)
-    return any(value and (stripped == value or len(value) >= 80 and value in stripped) for value in raw(facts))
+    return not detail and any(
+        value and ((stripped == value)
+                   or (not readable_fallback and len(value) >= 80 and value in stripped))
+        for value in raw(facts))
 
 
 def safe_expression(text, facts, kind, system=""):

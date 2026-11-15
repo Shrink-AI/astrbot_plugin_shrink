@@ -14,11 +14,11 @@ from shrink.persistence.task_inputs import TaskInputsRepository
 
 
 @pytest.fixture
-def app(tmp_path):
+async def app(tmp_path):
     value = Application(tmp_path, AsyncMock(return_value="甲决定去杭州，工具已查到车票。"),
                         AsyncMock(return_value=None), AsyncMock())
     yield value
-    value.database.close()
+    await value.close()
 
 
 def receive(app, identity="m1", text="去杭州", sender="100", session="bot:GroupMessage:1"):
@@ -138,9 +138,9 @@ async def test_compression_preserves_references_and_only_advances_affected_sessi
     assert app.history.references("bot:GroupMessage:1", refs)[0]["text"] == "行程细节" * 45
     assert app.history.read_checkpoint("bot:GroupMessage:1", checkpoint["id"])["originals"]
     assert not app.history.repository.checkpoint("other:GroupMessage:1")
-    calls = app.history.model.await_count
+    calls = app.history.model.__wrapped__.await_count
     await app.history.contexts("bot:GroupMessage:1", 900)
-    assert app.history.model.await_count == calls
+    assert app.history.model.__wrapped__.await_count == calls
     with pytest.raises(ValueError, match="当前会话"):
         app.history.references("other:GroupMessage:1", refs)
     with pytest.raises(ValueError, match="当前会话"):
@@ -150,19 +150,20 @@ async def test_compression_preserves_references_and_only_advances_affected_sessi
 async def test_correction_during_summary_does_not_restore_stale_checkpoint(app):
     first, _ = receive(app, text="周一出发")
     for i in range(5):
-        receive(app, f"long{i}", "行程" * 100)
+        receive(app, f"long{i}", "行程" * 200)
     waiting, release = asyncio.Event(), asyncio.Event()
     async def summary(*args):
         waiting.set()
         await release.wait()
         return "周一出发"
     app.history.model = summary
-    work = asyncio.create_task(app.history.contexts("bot:GroupMessage:1", 900))
-    await waiting.wait()
+    await app.history.contexts("bot:GroupMessage:1", 900)
+    await asyncio.wait_for(waiting.wait(), 1)
     app.history.revise("bot:GroupMessage:1", first["message_id"], sender="qq:100",
                        identity="correct", text="周二出发")
     release.set()
-    result = await work
+    await asyncio.gather(*list(app.tasks.jobs))
+    result = await app.history.contexts("bot:GroupMessage:1", 4000)
     assert "周一" not in str(result) and "周二" in str(result)
     assert app.history.repository.checkpoint("bot:GroupMessage:1") is None
 
@@ -170,7 +171,7 @@ async def test_correction_during_summary_does_not_restore_stale_checkpoint(app):
 @pytest.mark.parametrize("failure", ["timeout", "empty", "exception"])
 async def test_compression_failure_falls_back_without_blocking(app, failure):
     for i in range(5):
-        receive(app, str(i), str(i) * 200)
+        receive(app, str(i), str(i) * 400)
     if failure == "timeout":
         async def slow(*args):
             await asyncio.sleep(10)
@@ -180,14 +181,17 @@ async def test_compression_failure_falls_back_without_blocking(app, failure):
         app.history.model = AsyncMock(return_value="")
     else:
         app.history.model = AsyncMock(side_effect=RuntimeError("unavailable"))
+    app.history.retry_delays = (0, 0)
     result = await asyncio.wait_for(app.history.contexts("bot:GroupMessage:1", 500), .5)
     assert "4" * 200 in result[-1]["content"]
-    assert not app.history.repository.checkpoint("bot:GroupMessage:1")
+    await asyncio.wait_for(asyncio.gather(*list(app.tasks.jobs)), 1)
+    checkpoint = app.history.repository.checkpoint("bot:GroupMessage:1")
+    assert checkpoint["summary"] == "" and checkpoint["summary_state"] == "failed"
 
 
 async def test_retraction_and_correction_remove_old_facts_even_from_checkpoint(app):
     first, _ = receive(app, text="我决定周一出发")
-    receive(app, "m2", "其他细节" * 100)
+    receive(app, "m2", "其他细节" * 200)
     await app.history.contexts("bot:GroupMessage:1", 400)
     assert app.history.repository.checkpoint("bot:GroupMessage:1")
     app.history.revise("bot:GroupMessage:1", first["message_id"], sender="qq:100", identity="correction",

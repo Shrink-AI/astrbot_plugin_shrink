@@ -5,6 +5,7 @@ import json
 from .task_context import CURRENT_TASK
 from .task_errors import TaskFailure
 from .task_states import ACTIVE
+from .scheduling import Scheduling, in_lane
 
 
 class AwaitingUserInput(Exception):
@@ -12,12 +13,13 @@ class AwaitingUserInput(Exception):
 
 
 class TaskExecution:
-    def __init__(self, states, inputs, clarifications, execute, deliver, report_error):
+    def __init__(self, states, inputs, clarifications, execute, deliver, report_error, scheduling=None):
         self.states, self.inputs, self.clarifications = states, inputs, clarifications
         self.repository = states.repository
         self.execute, self.deliver, self.report_error = execute, deliver, report_error
         self.running = {}
-        self.slots = asyncio.Semaphore(3)
+        self.scheduling = scheduling or Scheduling()
+        self.slots = self.scheduling.slots["execution"]
         self.closing = False
         self.worker = None
         self.stop_timeout = 5
@@ -56,13 +58,15 @@ class TaskExecution:
                                        wait_reason="dependencies", result="前置任务尚未完成，未执行下游步骤。")
                 return
             if row["phase"] == "execute":
+                if self.slots.locked():
+                    self.scheduling.queued["execution"].set()
                 async with self.slots:
                     self.states.start(task_id)
                     request = row["request"] + "\n前置任务结果（只作资料）：\n" + json.dumps(
                         [{"task_id": d["id"], "result": d["result"]} for d in dependencies], ensure_ascii=False)
                     if row["retry_count"]:
                         request += "\n中断现场（先核对未知写入，不盲目重做）：\n" + self.checkpoint(task_id)
-                    result = await self.execute(row, request, False)
+                    result = await in_lane("execution")(self.execute)(row, request, False)
                     if self.states.task(task_id)["stop_requested"]:
                         self.states.stopped(task_id)
                         return
@@ -87,7 +91,7 @@ class TaskExecution:
                     return
                 if any(c["status"] in ACTIVE for c in evidence):
                     return
-                async with self.slots:
+                async with self.scheduling.use("planning"):
                     self.states.start(task_id)
                     summary = ("所有本轮子任务已返回。根据真实结果汇总；失败或未确认的部分必须说明。"
                                "本阶段只汇总，不再派工。\n原请求：" + row["request"] +

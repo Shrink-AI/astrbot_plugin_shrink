@@ -213,14 +213,16 @@ async def test_background_lookup_uses_owned_task_scope_not_stale_turn(app, host_
 @pytest.mark.asyncio
 @pytest.mark.parametrize('text', ['好，同步好了，等下直接推送到远端', '马上就好，正在推了'])
 async def test_fallback_claim_is_replaced_before_output(app, host_modules, text):
-    from shrink.services.expression import Finished
-    app.expression = SimpleNamespace(finish=AsyncMock(return_value=Finished(text)))
+    from shrink.services.expression import ExpressionService
+    app.expression = ExpressionService(
+        app.state, SimpleNamespace(learned_persona=lambda: ""), None, AsyncMock(), app.tasks.error)
+    app.expression.outbound = app.outbound
     app.messages = SimpleNamespace(recent_bot=Mock(return_value=[]))
     adapter = host_modules.ConversationAdapter(app, 'test')
     adapter.record_episode = Mock()
     response = SimpleNamespace(tools_call_name=[], role='assistant', completion_text=text, result_chain=None)
     await adapter.response(Event(), response)
-    assert response.completion_text == '我看看这次同步的记录。'
+    assert response.completion_text == '我看看这次同步的记录'
     app.outbound.compose.assert_awaited_once()
 
 

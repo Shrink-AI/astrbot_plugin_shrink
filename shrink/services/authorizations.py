@@ -6,7 +6,11 @@ import time
 
 
 CATEGORIES = {"read": "读取", "execute": "执行", "write": "写入",
-              "delete_data": "删除业务数据", "grant_permission": "新增权限"}
+              "delete_data": "删除业务数据", "grant_permission": "新增权限", "unknown": "未识别操作"}
+EXPIRY_MARGIN = 30
+CONTINUOUS = (r"(?:以后|后续|今后|未来)(?:的)?"
+              r"(?:这类|同类任务|这类任务|同类|删除业务数据|删除数据|新增权限|授予权限)?"
+              r"(?:也|都)?(?:不用再?问|不必再?问|不要再问|无需再?问)(?:我)?(?:了)?")
 
 
 class AuthorizationService:
@@ -55,7 +59,7 @@ class AuthorizationService:
         if not all(isinstance(specification.get(k), str) and specification[k] for k in required):
             raise ValueError("需要设备、提供者和具体执行会话")
         categories = specification.get("categories", [])
-        if not categories or not isinstance(categories, list) or not set(categories) <= CATEGORIES.keys():
+        if not categories or not isinstance(categories, list) or not set(categories) <= CATEGORIES.keys() - {"unknown"}:
             raise ValueError("无效操作类别")
         actor = str(scope["sender"])
         administrator = specification.get("administrator", actor)
@@ -138,6 +142,8 @@ class AuthorizationService:
             return self.repository.receive(identity, incoming["id"], value)
 
     def policy_for(self, body):
+        if body["category"] == "unknown":
+            return None, "needs_authorization:未识别操作"
         relevant = [p for p in self.repository.policies() if p["provider"] == body["provider"]
                     and p["administrator"] == body["administrator"]
                     and p["origin"] == body["origin"]
@@ -169,9 +175,8 @@ class AuthorizationService:
             if event["operation_id"]:
                 return await self.reconcile(event, scope)
             policy, reason = self.policy_for(body)
-            if answer_input:
-                self.answer(answer_input, scope, identity, body["task"])
-            if body["expires"] <= time.time() or self.repository.blocked(body) or not self.is_admin(body["administrator"]):
+            answer = self.answer(answer_input, scope, identity, body["task"]) if answer_input else None
+            if body["expires"] <= time.time() + EXPIRY_MARGIN or self.repository.blocked(body) or not self.is_admin(body["administrator"]):
                 self.repository.update(identity, "held", "expired_or_access_revoked")
             elif not answer_input and not policy:
                 self.repository.update(identity, "held" if reason == "revoked_expired_or_device_mismatch" else "waiting_user", reason)
@@ -185,14 +190,21 @@ class AuthorizationService:
                     self.repository.update(identity, "held", "authorization_changed")
                 else:
                     self.task_scope(body["task"], body["origin"], body["administrator"])
-                    operation = self.repository.reserve(identity, policy if not answer_input else None, answer_input)
+                    note = ""
+                    approval_policy = policy if not answer_input else None
+                    if answer:
+                        note = self.continuous_answer(answer_input, scope, body, answer["allow"])
+                        approval_policy = next((p for p in self.repository.policies(body["administrator"])
+                                                if p["input_id"] == answer_input), None)
+                    operation = self.repository.reserve(identity, approval_policy, answer_input,
+                                                        allow=answer["allow"] if answer else True, note=note)
                     if operation:
                         try:
                             await self.command(body["provider"], "approve", {
                                 "device_id": body["device"], "session_id": body["execution_session"],
-                                "approval_id": body["approval_id"], "allow": True, "request_id": operation,
-                                "authorization": {"policy_id": policy["id"] if policy else "",
-                                                  "version": policy["version"] if policy else 0,
+                                "approval_id": body["approval_id"], "allow": answer["allow"] if answer else True, "request_id": operation,
+                                "authorization": {"policy_id": approval_policy["id"] if approval_policy else "",
+                                                  "version": approval_policy["version"] if approval_policy else 0,
                                                   "confirmation_id": identity, "expires": body["expires"]}}, scope)
                         except (Exception, asyncio.CancelledError) as exc:
                             self.repository.update(identity, "unknown", type(exc).__name__)
@@ -203,6 +215,24 @@ class AuthorizationService:
         finally:
             self.inflight.discard(identity)
 
+    def answer_candidates(self, input_id, scope):
+        source = self.trusted(input_id, scope)
+        rows = [e for e in self.repository.events() if e["state"] in {"pending", "waiting_user", "held"}
+                and not e["operation_id"] and e["body"]["origin"] == scope["session"]
+                and e["body"]["administrator"] == str(scope["sender"])]
+        text = source["text"].strip()
+        targets = [e for e in rows if any(
+            value and re.search(r"(?<![\w])" + re.escape(value) + r"(?![\w])", text)
+            for value in (e["body"]["approval_id"], e["body"]["task"], e["body"]["execution_session"]))]
+        # Reply references are recorded at the trusted platform boundary, never supplied by the model.
+        reply = source["metadata"].get("reply_to")
+        if reply:
+            refs = self.repository.question_references(scope["session"], str(scope["sender"]),
+                                                       source["metadata"].get("reply_text", ""))
+            if refs:
+                targets = [e for e in rows if e["id"] in refs]
+        return targets or rows
+
     def answer(self, input_id, scope, confirmation_id, task):
         source = self.trusted(input_id, scope)
         event = self.repository.event(confirmation_id)
@@ -211,20 +241,49 @@ class AuthorizationService:
             raise ValueError("答复与任务或确认对象不一致")
         if source["source"] == "webui":
             data = json.loads(source["text"])
-            if data.get("action") != "answer" or data.get("arguments") != {"confirmation_id": confirmation_id, "task": task}:
+            args = data.get("arguments", {})
+            if (data.get("action") != "answer" or args.get("confirmation_id") != confirmation_id
+                    or args.get("task") != task or set(args) - {"confirmation_id", "task", "allow"}
+                    or not isinstance(args.get("allow", True), bool)):
                 raise ValueError("答复表单与确认对象不一致")
-        elif source["text"].strip() != "同意 " + body["approval_id"]:
-            raise ValueError("答复须明确：同意 确认对象ID")
-        if source["source"] == "platform" and any(
-            e["id"] != confirmation_id and e["body"]["approval_id"] == body["approval_id"]
-            and e["body"]["origin"] == body["origin"] and e["state"] != "confirmed"
-            for e in self.repository.events()
-        ):
-            raise ValueError("确认对象ID不唯一，请在授权管理中选择具体任务与确认对象")
+            allow = args.get("allow", True)
+        else:
+            text = source["text"].strip()
+            match = re.match(r"^(不同意|不允许|不批准|不要执行|拒绝|同意|允许|批准|可以|好的|没问题)(?=$|[\s，,。！!])", text)
+            if not match or re.search(r"但|如果|除非|不过|暂不|先别|[？?]", text):
+                raise ValueError("答复须明确同意或拒绝具体确认对象")
+            tail = text[match.end():]
+            tail = tail.strip(" \t\r\n，,。！!")
+            targets = [re.escape(v) for v in (body["approval_id"], body["task"], body["execution_session"]) if v]
+            target = re.match(r"^(?:任务|操作|确认对象|会话)?\s*(?:" + "|".join(targets) + r")(?=$|[\s，,。！!])", tail)
+            if target:
+                tail = tail[target.end():].strip(" \t\r\n，,。！!")
+            if tail and not re.fullmatch(CONTINUOUS, tail):
+                raise ValueError("答复含未明确的对象或条件，请明确同意或拒绝")
+            allow = match[1] in {"同意", "允许", "批准", "可以", "好的", "没问题"}
+            candidates = self.answer_candidates(input_id, scope)
+            if len(candidates) != 1 or candidates[0]["id"] != confirmation_id:
+                raise ValueError("确认对象不唯一，请明确具体任务或确认对象")
         reused = [r for r in self.repository.events() if r["answer_input"] == input_id and r["id"] != confirmation_id]
         if reused:
             raise ValueError("答复已经绑定另一确认对象")
-        return event
+        return {**event, "allow": allow}
+
+    def continuous_answer(self, input_id, scope, body, allow):
+        source = self.trusted(input_id, scope)
+        text = source["text"]
+        if source["source"] != "platform" or not allow or not re.search(CONTINUOUS, text):
+            return "仅逐次同意；未建立持续授权" if allow else "本次为拒绝；未建立持续授权"
+        category = body["category"]
+        explicit = {"delete_data": r"删除(?:业务)?数据", "grant_permission": r"新增权限|授予权限"}
+        if category == "unknown" or (category in explicit and not re.search(explicit[category], text)):
+            return "仅逐次同意；未建立持续授权，需点明敏感操作类别或核实未知操作"
+        if not any(p["input_id"] == input_id for p in self.repository.policies(str(scope["sender"]))):
+            self.repository.grant({
+                **body, "grantor": str(scope["sender"]), "input_id": input_id,
+                "categories": [category], "future": bool(re.search(r"(?:以后|后续|今后|未来)(?:的)?同类任务", text)),
+                "expires": None})
+        return "已按本确认对象建立持续授权"
 
     async def reconcile(self, event, scope):
         body = event["body"]
@@ -232,10 +291,17 @@ class AuthorizationService:
             receipt = await self.command(body["provider"], "result", {
                 "device_id": body["device"], "request_id": event["operation_id"]}, scope)
             result = receipt.get("result") or {}
+            request = receipt.get("request") or {}
+            args = request.get("arguments", {})
             confirmed = (receipt.get("state") == "completed" and result.get("ok") is True
-                         and result.get("approval_id") == body["approval_id"]
-                         and result.get("session_id") == body["execution_session"] and result.get("allow") is True)
-            self.repository.update(event["id"], "confirmed" if confirmed else "unknown", receipt=receipt)
+                         and request.get("action") == "approve"
+                         and args.get("approval_id") == body["approval_id"]
+                         and args.get("session_id") == body["execution_session"]
+                         and args.get("allow") is bool(event["allow"])
+                         and body["expires"] > time.time() + EXPIRY_MARGIN)
+            rejected = result.get("state") == "not_executed"
+            self.repository.update(event["id"], "confirmed" if confirmed else "held" if rejected else "unknown",
+                                   event["answer_note"], receipt=receipt)
             if confirmed:
                 self.inbox.complete([event["input_id"]])
         except Exception as exc:
@@ -257,17 +323,24 @@ class AuthorizationService:
         event = self.repository.event(identity)
         body = event["body"]
         if (event["operation_id"] != operation_id or event["state"] not in {"issuing", "unknown"}
-                or body["expires"] <= time.time() or self.repository.blocked(body)
+                or body["expires"] <= time.time() + EXPIRY_MARGIN or self.repository.blocked(body)
                 or not self.is_admin(body["administrator"])):
             return False
         try:
             self.task_scope(body["task"], body["origin"], body["administrator"])
         except ValueError:
             return False
-        if event["answer_input"]:
+        if event["answer_input"] and not event["policy"]:
             return True
         policy, _ = self.policy_for(body)
         return bool(policy and policy["id"] == event["policy"] and policy["version"] == event["policy_version"])
+
+    async def validate_execution(self, identity, operation_id):
+        if not self.execution_allowed(identity, operation_id):
+            return False
+        body = self.repository.event(identity)["body"]
+        return bool(self.access and await self.access(body, body["administrator"])
+                    and self.execution_allowed(identity, operation_id))
 
     def listing(self, scope):
         if not scope.get("admin") or not self.is_admin(str(scope.get("sender", ""))):

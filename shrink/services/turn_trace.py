@@ -3,7 +3,7 @@ import time
 import uuid
 
 # Each phase ends where the next begins, so the phases add up to the turn's total.
-PHASES = ("decision", "debounce", "follow_up", "lock", "context", "model", "tool", "expression", "send")
+PHASES = ("decision", "debounce", "follow_up", "lock", "chat_queue", "context", "model", "tool", "expression", "send")
 
 
 class TurnTrace:
@@ -18,6 +18,7 @@ class TurnTrace:
         self.phases = {}
         self.tools = []
         self.model_calls = 0
+        self.expression_model_calls = 0
         self.task_id = ""
         self.system_prefix_same = None
         self.outcome = ""
@@ -49,6 +50,7 @@ class TurnTrace:
             "total": round(self.clock() - self.begin, 3),
             "phases": {k: round(v, 3) for k, v in self.phases.items()},
             "tools": list(self.tools), "model_calls": self.model_calls,
+            "expression_model_calls": self.expression_model_calls,
             "system_prefix_same": self.system_prefix_same,
         }
 
@@ -68,4 +70,7 @@ def distribution(rows):
         report[name] = {"p50": round(percentile(values, 0.5), 3),
                         "p95": round(percentile(values, 0.95), 3),
                         "max": round(max(values, default=0.0), 3)}
+    calls = [r["expression_model_calls"] for r in rows if r.get("expression_model_calls") is not None]
+    report["expression_model_calls"] = {"total": sum(calls), "max": max(calls, default=0),
+                                      "zero_turns": calls.count(0), "measured_turns": len(calls)}
     return report

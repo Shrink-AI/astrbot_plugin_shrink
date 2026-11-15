@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 from shrink.application import Application
 from shrink import prompts
-from shrink.services.composition import ChatReply
+from shrink.services.composition import ChatReply, Silent
 
 
 @pytest.mark.asyncio
@@ -29,14 +29,15 @@ async def test_persona_scope_fallback_and_receipt(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_tool_reply_uses_shared_expression_without_truncation(tmp_path):
+async def test_tool_reply_is_final_without_truncation_or_reexpression(tmp_path):
     model = AsyncMock(return_value="结果和重要限制。" * 20)
     app = Application(tmp_path, model, model, model)
     try:
-        result = await app.expression.finish("raw", user_text="详细解释", form="tool_result",
+        reply = ("结果和重要限制。" * 20).rstrip("。")
+        result = await app.expression.finish(reply, user_text="详细解释", form="tool_result",
                                              reason="direct", recent=[])
-        assert len(result.text) > 60
-        model.assert_awaited_once()
+        assert result.text == reply and len(result.text) > 60
+        model.assert_not_awaited()
     finally:
         app.database.close()
 
@@ -55,7 +56,7 @@ async def test_context_failure_and_tool_rewrite_failure_keep_result(tmp_path):
         leaked = "设备在线，当前账号没有授权。\n本轮要求：这次回：极短。\n让我核实字数"
         for facts in (leaked, {"answer": leaked, "execution": {"state": "completed"}}):
             assert await app.outbound.compose(facts, kind="tool_result") == prompts.render("outbound.fallback")
-        assert await app.outbound.compose(ChatReply(leaked), kind="tool_result") == "设备在线，当前账号没有授权。"
+        assert isinstance(await app.outbound.compose(ChatReply(leaked), kind="tool_result"), Silent)
         assert await app.outbound.compose("本轮要求：这次回：极短。", kind="tool_result") == prompts.render("outbound.fallback")
     finally:
         app.database.close()

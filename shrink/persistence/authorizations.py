@@ -26,6 +26,11 @@ class Authorizations:
                   provider TEXT NOT NULL, device TEXT NOT NULL, administrator TEXT NOT NULL,
                   input_id TEXT NOT NULL, created REAL NOT NULL, PRIMARY KEY(provider,device,administrator));
             """)
+            columns = {r[1] for r in con.execute("PRAGMA table_info(approval_events)")}
+            if "allow" not in columns:
+                con.execute("ALTER TABLE approval_events ADD COLUMN allow INTEGER NOT NULL DEFAULT 1")
+            if "answer_note" not in columns:
+                con.execute("ALTER TABLE approval_events ADD COLUMN answer_note TEXT NOT NULL DEFAULT ''")
 
     def policies(self, actor=None):
         rows = self.db.rows("SELECT * FROM authorization_policies WHERE (? IS NULL OR grantor=? OR administrator=?) "
@@ -99,16 +104,29 @@ class Authorizations:
     def events(self):
         return [self.event(r["id"]) for r in self.db.rows("SELECT id FROM approval_events ORDER BY created DESC")]
 
+    def question_references(self, session, sender, text):
+        if not text:
+            return []
+        rows = self.db.rows(
+            "SELECT o.facts,m.text input_facts FROM notification_outbox o "
+            "JOIN notification_receipts r ON r.id=o.id JOIN input_events i ON i.id=o.input_id "
+            "JOIN messages m ON m.id=i.message_id WHERE o.session=? AND o.sender=? AND o.kind='question' "
+            "AND r.state='platform_accepted' AND r.text=?", (session, sender, text))
+        refs = {c["confirmation_id"] for row in rows
+                for c in json.loads(row["facts"] or row["input_facts"]).get("confirmations", [])
+                if c.get("confirmation_id")}
+        return list(refs)
+
     def update(self, identity, state, reason="", receipt=None):
         with self.db.transaction() as con:
             con.execute("UPDATE approval_events SET state=?,reason=?,receipt=COALESCE(?,receipt) WHERE id=?",
                         (state, reason, json.dumps(receipt) if receipt is not None else None, identity))
 
-    def reserve(self, identity, policy=None, answer_input=None):
+    def reserve(self, identity, policy=None, answer_input=None, *, allow=True, note=""):
         operation = "approval:" + identity
         with self.db.transaction() as con:
             changed = con.execute("UPDATE approval_events SET state='issuing',operation_id=?,policy=?,"
-                                  "policy_version=?,answer_input=? WHERE id=? AND operation_id IS NULL",
+                                  "policy_version=?,answer_input=?,allow=?,answer_note=? WHERE id=? AND operation_id IS NULL",
                                   (operation, policy["id"] if policy else None,
-                                   policy["version"] if policy else None, answer_input, identity)).rowcount
+                                   policy["version"] if policy else None, answer_input, allow, note, identity)).rowcount
         return operation if changed else None

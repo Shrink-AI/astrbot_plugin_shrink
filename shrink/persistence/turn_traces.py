@@ -17,6 +17,8 @@ class TurnTraceRepository:
                 "model_calls INTEGER NOT NULL DEFAULT 0)")
             if "system_prefix_same" not in {r["name"] for r in self.db.rows("PRAGMA table_info(turn_traces)")}:
                 con.execute("ALTER TABLE turn_traces ADD COLUMN system_prefix_same INTEGER")
+            if "expression_model_calls" not in {r["name"] for r in self.db.rows("PRAGMA table_info(turn_traces)")}:
+                con.execute("ALTER TABLE turn_traces ADD COLUMN expression_model_calls INTEGER")
             con.execute("CREATE INDEX IF NOT EXISTS turn_traces_started ON turn_traces(started)")
             con.execute("DELETE FROM turn_traces WHERE started<?", (time.time() - KEEP_SECONDS,))
 
@@ -24,13 +26,13 @@ class TurnTraceRepository:
         with self.db.transaction() as con:
             con.execute(
                 "INSERT OR REPLACE INTO turn_traces(run_id,input_id,umo,source,sender,reason,"
-                "outcome,task_id,started,total,phases,tools,model_calls,system_prefix_same) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "outcome,task_id,started,total,phases,tools,model_calls,system_prefix_same,expression_model_calls) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (record["run_id"], record["input_id"], record["umo"], record["source"],
                  record["sender"], record["reason"], record["outcome"], record["task_id"],
                  record["started"], record["total"],
                  json.dumps(record["phases"]), json.dumps(record["tools"], ensure_ascii=False),
-                 record["model_calls"], record.get("system_prefix_same")))
+                 record["model_calls"], record.get("system_prefix_same"), record.get("expression_model_calls", 0)))
 
     def since(self, started=0.0, limit=5000):
         rows = self.db.rows(

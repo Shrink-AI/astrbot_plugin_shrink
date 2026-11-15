@@ -18,8 +18,9 @@ def service(app):
     async def command(provider, action, args, scope):
         if action == "result":
             event = next(e for e in service.repository.events() if e["operation_id"] == args["request_id"])
-            return {"state": "completed", "result": {"ok": True, "allow": True,
-                    "session_id": event["body"]["execution_session"], "approval_id": event["body"]["approval_id"]}}
+            return {"state": "completed", "result": {"ok": True},
+                    "request": {"action": "approve", "arguments": {"allow": bool(event["allow"]),
+                    "session_id": event["body"]["execution_session"], "approval_id": event["body"]["approval_id"]}}}
         return {"state": "pending"}
     service.command = AsyncMock(side_effect=command)
     return service

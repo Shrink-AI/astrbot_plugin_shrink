@@ -46,6 +46,7 @@ class MemoryService:
         self.repository, self.state, self.embed, self.error = repository, state, embed, error
         self.people, self.review = people, review
         self.knowledge = None
+        self.compute = asyncio.to_thread
 
     async def vector(self, text):
         try:
@@ -188,7 +189,7 @@ class MemoryService:
         for row in self.repository.many(list(terms.values())):
             candidates.setdefault(row["id"], row)
         if vector and fallback:
-            for memory_id in self._nearest(vector, 40):
+            for memory_id in await self.compute(self._nearest, vector, 40, list(self.repository.vector_index.items())):
                 if memory_id not in candidates:
                     row = self.repository.get(memory_id)
                     if row:
@@ -222,10 +223,10 @@ class MemoryService:
         self.repository.mark_recalled([r["id"] for r in chosen])
         return self.render(chosen, query), chosen
 
-    def _nearest(self, vector, count):
+    def _nearest(self, vector, count, items=None):
         norm = math.sqrt(sum(x * x for x in vector)) or 1
         matches = []
-        for memory_id, stored in self.repository.vector_index.items():
+        for memory_id, stored in (self.repository.vector_index.items() if items is None else items):
             if len(stored) != len(vector):
                 continue
             score = sum(a * b for a, b in zip(vector, stored)) / norm

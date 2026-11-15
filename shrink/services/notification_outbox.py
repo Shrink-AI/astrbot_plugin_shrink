@@ -3,7 +3,10 @@ import asyncio
 import json
 import time
 
-from .notification_selection import select, URGENT
+from .notification_selection import select, URGENT, necessary
+from .composition import NOTIFICATION
+from .outbound_guard import unsafe
+from .scheduling import Scheduling
 
 
 def task_fact(task):
@@ -20,8 +23,11 @@ class NotificationOutbox:
         self.foreground = lambda session: False
         self.inflight = set()
         self.merge_seconds = 2
+        self.scheduling = Scheduling()
+        self.persona = lambda: ""
 
-    def submit(self, scope, event_id, facts, *, kind="result", message_type="", request="", task_id="", fact_refs=()):
+    def submit(self, scope, event_id, facts, *, kind="result", message_type="", request="", task_id="", fact_refs=(),
+               fallback_text=""):
         if not event_id or not scope.get("session") or not scope.get("sender"):
             raise ValueError("通知需要稳定事件标识、原会话和创建者")
         if not isinstance(fact_refs, (tuple, list)) or not all(isinstance(ref, str) and ref for ref in fact_refs):
@@ -68,13 +74,53 @@ class NotificationOutbox:
                 "kind": kind, "task_id": task_id, "facts": facts, "fact_refs": refs, "request": request,
                 "priority": 0 if kind in URGENT else 20 if kind in {"progress", "tool_progress"} else 10,
                 "state": "pending" if owned else "suppressed", "reason": "" if owned else "compatibility_owner",
+                "fallback_text": fallback_text.strip() if isinstance(fallback_text, str)
+                and 0 < len(fallback_text) <= 1000 and not unsafe(
+                    fallback_text, facts, self.persona(), readable_fallback=True) else "",
                 "created": now, "available": now + (.2 if question else self.merge_seconds
                     if kind in {"progress", "tool_progress"}
                     and self.decisions.state.settings.decision_backend in self.decisions.backends else 0)})
             self.inbox.repository.complete([incoming["id"]])
             return row
 
+    def lookup(self, scope, event_id, message_type, task_id=""):
+        if task_id:
+            task = self.repository.task(task_id)
+            if task["sender"] != str(scope.get("sender", "")):
+                raise ValueError("通知任务不属于当前创建者")
+            scope = {**scope, "session": task["session"]}
+        identity = json.dumps([scope.get("session"), str(scope.get("sender", "")), event_id], ensure_ascii=False)
+        row = self.repository.get(identity)
+        if not row or row["message_type"] != message_type:
+            raise ValueError("通知不存在或范围不匹配")
+        return row
+
+    def operate(self, scope, event_id, message_type, action, task_id=""):
+        row = self.lookup(scope, event_id, message_type, task_id)
+        if (row["session"], row["sender"]) != (scope.get("session"), str(scope.get("sender", ""))):
+            raise ValueError("通知操作需要原提交者范围")
+        identity = row["id"]
+        receipt = self.receipts.get(identity)
+        if receipt and receipt["state"] in {"platform_accepted", "sending", "unknown", "silent", "cancelled"}:
+            self.project(row, receipt)
+            return self.repository.get(identity), False
+        if action == "cancel":
+            applied = not receipt and self.repository.move(
+                identity, ("pending", "merging"), "cancelled", "submitter_cancelled")
+        elif action == "retry":
+            allowed = (identity not in self.inflight and row["state"] not in {
+                "sent", "unknown", "suppressed", "cancelled"} and (
+                    receipt and receipt["state"] in {"failed", "interrupted", "composing"}
+                    or row["state"] == "failed" and not receipt))
+            applied = bool(allowed and self.repository.move(
+                identity, ("failed", "delivering"), "pending", "explicit_retry"))
+        else:
+            raise ValueError("未知通知操作")
+        return self.repository.get(identity), bool(applied)
+
     def busy(self, row):
+        if necessary(row["kind"]) and time.time() - row["created"] >= self.decisions.state.settings.notification_max_delay:
+            return False
         return row["priority"] > 0 and (self.foreground(row["session"]) or bool(
             self.inbox.repository.pending(route="chat", session=row["session"])))
 
@@ -103,7 +149,14 @@ class NotificationOutbox:
 
     async def deliver(self, identity, *, event=None, retry=False):
         row = self.repository.get(identity)
-        if not row or identity in self.inflight or row["state"] in {"sent", "unknown", "suppressed"}:
+        if not row:
+            return False
+        async with self.scheduling.use("urgent" if row["priority"] == 0 else "expression"):
+            return await self._deliver(identity, event=event, retry=retry)
+
+    async def _deliver(self, identity, *, event=None, retry=False):
+        row = self.repository.get(identity)
+        if not row or identity in self.inflight or row["state"] in {"sent", "unknown", "suppressed", "cancelled"}:
             return False
         receipt = self.receipts.get(identity)
         protected = receipt and receipt["state"] in {"platform_accepted", "sending", "unknown", "silent", "cancelled"}
@@ -125,6 +178,8 @@ class NotificationOutbox:
             if row["kind"] == "question":
                 row = self.repository.merge_questions(row)
             decision = row["decision"] or await select(self.decisions, row)
+            if self.repository.get(identity)["state"] == "cancelled":
+                return False
             notify = decision["decision"]["notify"]
             if notify == "silent":
                 if self.receipts.reserve(identity):
@@ -136,17 +191,26 @@ class NotificationOutbox:
                 others = []
                 for sibling in self.repository.siblings(row):
                     value = sibling["decision"] or await select(self.decisions, sibling)
+                    if self.repository.get(identity)["state"] == "cancelled":
+                        return False
+                    if self.repository.get(sibling["id"])["state"] == "cancelled":
+                        continue
                     if value["decision"]["notify"] == "merge":
                         self.repository.state(sibling["id"], "merging", decision=value)
                         others.append(sibling)
                     else:
                         self.repository.state(sibling["id"], "suppressed", value["reason"], decision=value)
+                others = [r for r in others if self.repository.get(r["id"])["state"] != "cancelled"]
                 row = self.repository.merge(row, others) if others else row
             if not self.preflight(row):
                 self.repository.state(identity, "suppressed", "duplicate_or_stale_fact", decision=decision)
                 return False
             self.repository.state(identity, "delivering", decision=decision)
-            accepted = await self.transport(row, event, retry or bool(receipt))
+            token = NOTIFICATION.set(row)
+            try:
+                accepted = await self.transport(row, event, retry or bool(receipt))
+            finally:
+                NOTIFICATION.reset(token)
             receipt = self.receipts.get(identity)
             if receipt:
                 if receipt["state"] == "deferred":

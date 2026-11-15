@@ -15,12 +15,16 @@
 | conversation | 必须等于输入的 session |
 | topic | 候选原始消息标识或 null；当前实现用于跨会话话题关联，不新造话题实体 |
 | task | 同会话、同创建者的候选任务标识或 null |
-| evidence | 输入或候选的标识列表 |
+| evidence | 必含当前 event.id 原值，其余仅任务／话题／人物候选的 id 原值 |
 | capability_candidates | 可用能力名称的有序子集 |
 | notify | silent / merge / normal / action |
 | confidence | 0–1；仅记录、评测，不授予权限 |
 
-程序严格校验字段、类型、候选引用及关联约束。`stop` 路由只能由规则生成。任务补充不得新建任务，追加前再核对创建者、会话和当前任务状态；入口拒绝偏离本轮已确认关联或已有输入绑定的目标。主人格可以省略 append_input 的 task_id，程序只使用本轮已选目标；无目标时要求澄清。
+程序严格校验字段、类型、身份及关联约束。2026-11-15：与权限无关的格式偏差在 services 中收窄规范化：从 evidence 丢弃非输入／候选 ID，并补入当前 event.id；保持最多 32 项且当前输入引用必保留。能力列表只保留原有候选名称，不补选能力；静默路由的通知降为 silent。空 evidence 可以补入当前输入，但缺失字段、错误类型、超长列表、额外权限字段仍拒绝。不解析带前缀的引用或从描述猜测 ID。
+
+覆盖会话、未知任务／话题、改变固定任务关联、无权限创建／追加任务、模型选择 stop、追加不可接收输入的任务、补充或已关联任务却新建任务、私聊／直呼被静默，均继续拒绝并回退规则基础决策。`stop` 路由只能由规则生成。任务补充不得新建任务，追加前再核对创建者、会话和当前任务状态；入口拒绝偏离本轮已确认关联或已有输入绑定的目标。主人格可以省略 append_input 的 task_id，程序只使用本轮已选目标；无目标时要求澄清。
+
+分类说明明确各字段取 candidates 中的 id／name 原值、evidence 必含 event.id；无任务／话题关联填 null，无能力填 []，无候选的 evidence 仍须包含当前输入。说明不提供可被照抄的示例 ID。旧代码取证未出现代码围栏，但首次修复后真实探测有 2/32 次输出带 json 围栏，因此增加唯一 JSON 对象提取；多对象、损坏的对象、错误结构仍拒绝，提取后沿用全部身份与权限复核。
 
 只选一个后端：默认 `decision_backend=haiku`、`decision_provider=shrink/claude-haiku-5-5`。`adapters/decision_backends.py` 调用宿主 provider，默认时限 `decision_timeout=3` 秒，可配置 0.01–10 秒；决策计入 turn_traces 的独立 `decision` 阶段。没有额外的决策自动重试循环，也不会故障后再串行调用另一个分类器。
 
@@ -81,4 +85,4 @@ uv run -q --no-project --with-requirements requirements.txt python tools/evaluat
 python tools/evaluate_decisions.py samples.jsonl --haiku-endpoint $env:HAIKU_EVAL_ENDPOINT --haiku-model $env:HAIKU_EVAL_MODEL --laya-endpoint $env:LAYA_EVAL_ENDPOINT --laya-version $env:LAYA_EVAL_VERSION
 ```
 
-本轮仅运行合成响应测试及脚本；未请求真实模型、未确认 Laya 端点，也未测得两模型的真实准确率、时延或分数校准。
+离线响应夹具仅用于验证评测工具，不代表真实模型效果。2026-11-15 的真实 Haiku 合成取证及修复后探测记录在 `runtime/release/report.md`；未确认 Laya 端点，也未测得两模型的对照准确率或分数校准。

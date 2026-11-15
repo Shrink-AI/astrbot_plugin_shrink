@@ -83,6 +83,7 @@ export function AuthorizationsPage() {
         <p>{c.body.device} · {c.body.task || '执行会话'} · {c.body.approval_id} · {c.body.category} · {c.state}</p>
         <p>{c.reason}</p>
         <Button disabled={busy || !['waiting_user', 'held'].includes(c.state)} onClick={() => run('answer', {confirmation_id: c.id, task: c.body.task})}>同意此任务的这项操作</Button>
+        <Button variant="destructive" disabled={busy || !['waiting_user', 'held'].includes(c.state)} onClick={() => run('answer', {confirmation_id: c.id, task: c.body.task, allow: false})}>拒绝此操作</Button>
         <Button variant="outline" disabled={busy || c.state !== 'unknown'} onClick={() => run('reconcile', {confirmation_id: c.id})}>核对原审批回执</Button>
         <details><summary>审计详情</summary><pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(c, null, 2)}</pre></details>
       </div>)}

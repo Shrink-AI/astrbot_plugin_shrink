@@ -25,6 +25,9 @@ class OutboxRepository:
                 CREATE TABLE IF NOT EXISTS notification_event_owners(
                   id TEXT PRIMARY KEY, owner TEXT NOT NULL);
             """)
+            columns = {r["name"] for r in con.execute("PRAGMA table_info(notification_outbox)")}
+            if "fallback_text" not in columns:
+                con.execute("ALTER TABLE notification_outbox ADD COLUMN fallback_text TEXT NOT NULL DEFAULT ''")
 
     def ownership(self, session, sender, message_type, owner):
         with self.db.transaction() as con:
@@ -56,13 +59,20 @@ class OutboxRepository:
             con.execute(
                 "INSERT OR IGNORE INTO notification_outbox"
                 "(id,event_id,input_id,session,sender,message_type,kind,task_id,facts,fact_refs,request,"
-                "priority,state,reason,created,available) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "priority,state,reason,created,available,fallback_text) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 tuple(None if key == "facts" else json.dumps(value[key], ensure_ascii=False)
                       if key == "fact_refs" else value[key]
                       for key in ("id", "event_id", "input_id", "session", "sender", "message_type", "kind",
                                   "task_id", "facts", "fact_refs", "request", "priority", "state", "reason",
-                                  "created", "available")))
+                                  "created", "available", "fallback_text")))
         return self.get(value["id"])
+
+    def move(self, identity, sources, target, reason=""):
+        with self.db.transaction() as con:
+            return bool(con.execute(
+                "UPDATE notification_outbox SET state=?,reason=? WHERE id=? AND state IN ("
+                + ",".join("?" for _ in sources) + ")",
+                (target, reason, identity, *sources)).rowcount)
 
     def state(self, identity, state, reason="", *, decision=None, merged_into=""):
         with self.db.transaction() as con:

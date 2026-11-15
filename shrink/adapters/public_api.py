@@ -4,6 +4,7 @@ import json
 
 from .plugin_protocol import validate, success
 from ..services.composition import Silent
+from ..services.scheduling import in_lane
 
 
 class PublicAPI:
@@ -15,10 +16,13 @@ class PublicAPI:
             'provider', 'device', 'execution_session', 'approval_id', 'category', 'task', 'summary',
             'confirmation_id', 'request_id')}
         confirmation_properties['expires'] = {'type': 'number', 'description': '确认对象有效期，Unix 秒'}
+        confirmation_properties['allow'] = {'type': 'boolean'}
         notification_properties = {key: {'type': 'string'} for key in (
             'event_id', 'message_type', 'kind', 'task_id')}
         notification_properties.update(facts={'oneOf': [{'type': 'object'}, {'type': 'string'}]},
-                                       fact_refs={'type': 'array', 'items': {'type': 'string'}})
+                                       fact_refs={'type': 'array', 'items': {'type': 'string'}},
+                                       fallback_text={'type': 'string', 'maxLength': 1000,
+                                           'description': '必要结果的可读兜底，严格校验后保存；不得传原始资料'})
         return {'protocol': 1, 'capabilities': [{
             'name': 'message.compose', 'version': 1, 'description': '按当前人格表达工具事实，不发送消息',
             'actions': {'record_sent': {'description': '记录已确认发送的文本及唯一回执', 'readonly': False,
@@ -33,19 +37,25 @@ class PublicAPI:
             'actions': {action: {'readonly': action == 'validate', 'parameters': {
                 'type': 'object', 'properties': confirmation_properties,
                 'required': ['provider', 'device', 'execution_session', 'approval_id', 'category', 'expires']
-                if action == 'submit' else ['confirmation_id', 'request_id'] if action == 'validate' else ['confirmation_id']},
+                if action == 'submit' else ['confirmation_id', 'request_id', 'device', 'execution_session', 'approval_id', 'allow']
+                if action == 'validate' else ['confirmation_id']},
                 'description': '可信电脑插件确认事件；不接收授权策略'} for action in ('submit', 'check', 'validate')}
         }, {
             'name': 'message.notify', 'version': 1, 'description': '提交事实到核心发件箱；调用者不得另行发送',
             'actions': {action: {'readonly': action == 'status', 'parameters': {
                 'type': 'object', 'properties': notification_properties,
                 'required': ['event_id', 'message_type', 'facts'] if action == 'submit' else ['event_id', 'message_type']},
-                'description': '稳定事件ID、消息类型、事实及原会话'} for action in ('submit', 'status')}
+                'description': {'submit': '持久接收事实；重复提交不补发',
+                                'status': '查询原事件的当前状态',
+                                'retry': '仅重新排队确认未发出的失败或无活跃执行者的中断项',
+                                'cancel': '仅撤回尚未进入表达和发送的原范围通知'}[action]}
+                        for action in ('submit', 'status', 'retry', 'cancel')}
         }]}
 
+    @in_lane("interactive")
     async def invoke(self, request):
         if request.get('capability') == 'message.notify':
-            validate(request, 'message.notify', {'submit', 'status'})
+            validate(request, 'message.notify', {'submit', 'status', 'retry', 'cancel'})
             app = self._host.application
             if app.closed:
                 raise RuntimeError('石英核心正在重载')
@@ -57,18 +67,17 @@ class PublicAPI:
                     raise ValueError('需要通知事实')
                 row = app.notification_outbox.submit(scope, args['event_id'], args['facts'],
                     kind=args.get('kind', 'result'), message_type=args['message_type'],
-                    task_id=args.get('task_id', ''), fact_refs=args.get('fact_refs', ()))
+                    task_id=args.get('task_id', ''), fact_refs=args.get('fact_refs', ()),
+                    fallback_text=args.get('fallback_text', ''))
+                extra = {'fallback_accepted': bool(row['fallback_text'])}
+            elif request['action'] in {'retry', 'cancel'}:
+                row, applied = app.notification_outbox.operate(
+                    scope, args['event_id'], args['message_type'], request['action'], args.get('task_id', ''))
+                extra = {'applied': applied}
             else:
-                if args.get('task_id'):
-                    task = app.notification_outbox.repository.task(args['task_id'])
-                    if task['sender'] != str(scope.get('sender', '')):
-                        raise ValueError('通知任务不属于当前创建者')
-                    scope = {**scope, 'session': task['session']}
-                identity = json.dumps([scope['session'], str(scope['sender']), args['event_id']], ensure_ascii=False)
-                row = app.notification_outbox.repository.get(identity)
-                if not row or row['message_type'] != args['message_type']:
-                    raise ValueError('通知不存在')
-            return success({k: row[k] for k in ('id', 'event_id', 'state', 'reason', 'session')})
+                row = app.notification_outbox.lookup(scope, args['event_id'], args['message_type'], args.get('task_id', ''))
+                extra = {}
+            return success({**{k: row[k] for k in ('id', 'event_id', 'state', 'reason', 'session')}, **extra})
         if request.get("capability") == "authorization.confirmation":
             validate(request, "authorization.confirmation", {"submit", "check", "validate"})
             scope = request.get("scope") or {}
@@ -80,7 +89,10 @@ class PublicAPI:
                 event["body"]["origin"], event["body"]["administrator"]) != (scope.get("session"), str(scope.get("sender", ""))):
                 raise ValueError("确认对象范围不匹配")
             if request["action"] == "validate":
-                return success({"allowed": service.execution_allowed(event["id"], request["arguments"]["request_id"])})
+                args = request["arguments"]
+                matches = all(args.get(k) == event["body"][k]
+                              for k in ("device", "execution_session", "approval_id")) and args.get("allow") is bool(event["allow"])
+                return success({"allowed": matches and await service.validate_execution(event["id"], args["request_id"])})
             return success(await service.process(event["id"]))
         validate(request, 'message.compose', {'compose', 'record_sent'})
         app = self._host.application

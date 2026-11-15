@@ -45,7 +45,7 @@ async def test_raw_material_never_becomes_fallback_and_is_retained(app, facts, f
 
 async def test_only_explicit_chat_reply_can_survive_a_failed_rewrite(app):
     reply = '{"answer":"用户明确要求的 JSON 答复"}'
-    assert await app.outbound.compose(ChatReply(reply), kind="tool_result") == reply
+    assert isinstance(await app.outbound.compose(ChatReply(reply), kind="tool_result"), Silent)
     assert await app.outbound.compose(reply, kind="tool_result") != reply
     finished = await app.expression.finish(
         "主模型写好的聊天回复", user_text="说一下", form="tool_result", reason="direct", recent=[])
@@ -56,7 +56,7 @@ async def test_chat_finish_honors_an_explicit_silent_result(app):
     from shrink.services.composition import SILENT
     app.outbound.compose = AsyncMock(return_value=SILENT)
     result = await app.expression.finish(
-        "old reply", user_text="test", form="tool_result", reason="direct", recent=[])
+        '{"raw":"reply"}', user_text="test", form="tool_result", reason="direct", recent=[])
     assert result.skip and result.text == ""
 
 

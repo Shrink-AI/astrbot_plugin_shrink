@@ -6,6 +6,7 @@ import sqlite3
 import time
 import re
 from datetime import datetime, timedelta, timezone
+from ..services.scheduling import LANE
 
 
 class KnowledgeBridge:
@@ -258,8 +259,12 @@ class KnowledgeBridge:
         if self.app.state.get("knowledge_authority") != "astrbot_kb":
             return []
         try:
-            result = await asyncio.wait_for(self.context.kb_manager.retrieve(
-                query=query, kb_names=["石英记忆"], top_k_fusion=60, top_m_final=40), 10)
+            retrieve = self.context.kb_manager.retrieve
+            if getattr(self.app, "scheduling", None):
+                retrieve = self.app.scheduling.wrap(retrieve, "retrieval")
+            result = await asyncio.wait_for(retrieve(
+                query=query, kb_names=["石英记忆"], top_k_fusion=60, top_m_final=40),
+                self.app.state.settings.foreground_retrieval_timeout if LANE.get() == "chat" else 10)
             self.retrieval_ok = True
             self.app.state.put("knowledge_retrieval", {"status": "ok", "at": time.time()})
             ids = []
@@ -285,11 +290,19 @@ class KnowledgeBridge:
     async def rerank(self, text, scored):
         if not scored:
             return scored
+        foreground = LANE.get() == "chat"
+        if foreground and self.rerank_lock.locked():
+            self.app.state.put("rerank_status", {"status": "degraded", "error": "前台跳过忙碌的重排",
+                                               "at": time.time()})
+            return scored
+        budget = self.app.state.settings.foreground_rerank_timeout if foreground else 20
         try:
             provider = await self.context.provider_manager.get_provider_by_id("local_bge_reranker")
             if provider is None:
                 raise ValueError("重排模型未就绪")
-            async with asyncio.timeout(20):
+            async with asyncio.timeout(budget):
+                if foreground and self.rerank_lock.locked():
+                    return scored
                 async with self.rerank_lock:
                     results = await provider.rerank(
                         text, [row["text"] for _, row in scored[:30]], top_n=30)
@@ -302,7 +315,7 @@ class KnowledgeBridge:
             self.app.state.put("rerank_status", {"status": "ok", "at": time.time()})
             return [pair for _, pair in ordered] + scored[30:]
         except Exception as exc:
-            error = "重排超时（含排队，20秒预算）" if isinstance(exc, TimeoutError) else (str(exc) or type(exc).__name__)
+            error = f"重排超时（含排队，{budget:g}秒预算）" if isinstance(exc, TimeoutError) else (str(exc) or type(exc).__name__)
             self.app.state.put("rerank_status", {"status": "degraded", "error": error[:300],
                                                "at": time.time()})
             return scored

@@ -74,7 +74,7 @@ export function DeviceAccess({ origin, device, account, administrators }: {
   return <Panel title="设备授权" className="mb-3">
     <div className="flex flex-col gap-2.5">
       {!device ? <p className="text-sm text-muted-foreground">先选择一台电脑，再管理它的授权。</p> : !owner ? <p className="text-sm text-muted-foreground">
-        {device.access === 'delegated' ? '你通过授权使用这台电脑。只有设备所有者可以添加、查看和撤销其他人的授权。' : '无法确认设备所有者权限，请刷新设备列表。'}
+        {device.access === 'delegated' ? '你通过授权使用这台电脑。只有设备所有者可以添加、查看和撤销其他人的授权。' : '此插件未提供设备委托信息；可使用当前设备，但无法在此管理其他人的访问授权。'}
       </p> : <>
         <p className="text-sm text-muted-foreground">把 {device.name} 的查看与控制权限授予另一位管理员。对方可以操作已有 Agent 会话，但不能转授权或撤销设备。原任务仍向原会话回传。</p>
         {error && <Alert variant="destructive"><AlertTitle>{error}</AlertTitle></Alert>}

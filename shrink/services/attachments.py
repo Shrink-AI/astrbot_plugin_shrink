@@ -19,7 +19,7 @@ class Attachments:
         self.app, self.db = app, app.database
         self.root = app.state.root / "attachments"
         self.root.mkdir(exist_ok=True)
-        self.slots = asyncio.Semaphore(2)
+        self.slots = app.scheduling.attachments
         self.db.connection.execute("""
         CREATE TABLE IF NOT EXISTS chat_attachments(
           id TEXT PRIMARY KEY,message_id TEXT NOT NULL,source TEXT NOT NULL,
@@ -102,20 +102,24 @@ class Attachments:
                             size += len(data)
                             if size > MAX_FILE:
                                 raise ValueError("附件超过64 MiB，未自动保存")
-                            output.write(data)
+                            await self.app.scheduling.compute(output.write, data)
                     return response.headers.get("content-type", "").split(";")[0]
         if locator.startswith("base64://"):
             if len(locator) > MAX_FILE * 4 // 3 + 16:
                 raise ValueError("附件超过64 MiB，未自动保存")
-            target.write_bytes(base64.b64decode(locator[9:], validate=True))
+            await self.app.scheduling.compute(self.write_base64, locator[9:], target)
             return "application/octet-stream"
         local = Path(unquote(urlsplit(locator).path) if locator.startswith("file://") else locator)
         if not local.is_file():
             raise ValueError("平台未提供可用的附件路径")
         if local.stat().st_size > MAX_FILE:
             raise ValueError("附件超过64 MiB，未自动保存")
-        await asyncio.to_thread(shutil.copyfile, local, target)
+        await self.app.scheduling.compute(shutil.copyfile, local, target)
         return mimetypes.guess_type(local.name)[0] or "application/octet-stream"
+
+    @staticmethod
+    def write_base64(encoded, target):
+        target.write_bytes(base64.b64decode(encoded, validate=True))
 
     def get(self, attachment_id, source=None):
         rows = self.db.rows("SELECT * FROM chat_attachments WHERE id=?", (attachment_id,))

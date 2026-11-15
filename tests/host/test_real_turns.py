@@ -290,7 +290,7 @@ async def test_plain_turn_replies_once_without_long_tools_or_notices(world):
     assert event.get_extra("offered_tools") == ["shrink_lookup"]
     assert world.ran == ["shrink_lookup"]
     # One message reaches the chat: the answer. Nothing is sent for the tool call itself.
-    assert world.sent == ["整理过的结果"], "tool results pass through expression"
+    assert world.sent == ["查到了"], "the main persona already expressed the tool result"
     await asyncio.sleep(0)
     trace = world.traces()[event.message_obj.message_id]
     assert trace["outcome"] == "sent" and trace["tools"] == ["shrink_lookup"]
@@ -376,7 +376,7 @@ async def test_turn_that_started_a_tool_is_not_withdrawn(world):
     assert world.cancelled == [], "a started tool is never interrupted by a newer message"
     world.gates["shrink_lookup"].set()
     await asyncio.wait_for(asyncio.gather(one, two), 10)
-    assert world.sent == ["整理过的结果"], "tool results pass through expression"
+    assert world.sent == ["部署正常"], "the main persona already expressed the tool result"
     await asyncio.sleep(0)
     traces = world.traces()
     # The host folded the new words into the running turn's tool result: consumed once.

@@ -166,7 +166,7 @@ async def test_tool_result_survives_failed_expression(store):
         "记上了，SYD-014。\n先挂三秋名下了。", user_text="帮我记一条",
         form="tool_result", reason="direct", recent=[],
     )
-    assert result.text == "记上了，SYD-014。\n先挂三秋名下了。"
+    assert result.text == "记上了，SYD-014。\n先挂三秋名下了"
 
 
 def test_turn_prompt_shows_task_reply_style():

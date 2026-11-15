@@ -40,6 +40,7 @@ from .services.persona import PersonaService
 from .services.skills import SkillService
 from .services.teach import TeachService
 from .services.tools import ToolService
+from .services.scheduling import Scheduling
 
 
 class Application:
@@ -51,6 +52,8 @@ class Application:
         sync_persona: PersonaSync,
         search: Searcher | None = None,
     ):
+        from .services.upgrades import startup_upgrade
+        fresh_database = startup_upgrade(root / "shrink.db")["status"] == "new"
         self.database = Database(root)
         self.closed = False
         self.started = False
@@ -74,11 +77,17 @@ class Application:
             self.status = StatusRepository(self.database, self.state, self.learning_repository)
             self.tasks = Tasks(self.state)
             error = self.tasks.error
+            self.scheduling = Scheduling()
+            expression_model = model
+            model = self.scheduling.wrap(model, "model")
+            embed = self.scheduling.wrap(embed, "embedding")
             from .persistence.history import HistoryRepository
             from .persistence.inbox import InboxRepository
             from .services.history import ConversationHistory
             from .services.inbox import Inbox
             self.history = ConversationHistory(HistoryRepository(self.database), self.messages, model, error)
+            self.history.spawn = self.tasks.spawn
+            self.history.scheduling = self.scheduling
             self.inbox = Inbox(InboxRepository(self.database), self.messages, self.history)
             from .persistence.authorizations import Authorizations
             from .services.authorizations import AuthorizationService
@@ -88,10 +97,12 @@ class Application:
             from .services.decisions import Decisions
             self.decisions = Decisions(DecisionRepository(self.database), self.inbox.repository,
                                        self.messages, self.state)
+            self.decisions.scheduling = self.scheduling
             self.people = PeopleService(self.people_repository, self.messages)
             self.memory = MemoryService(
                 self.memory_repository, self.state, embed, error, self.people, self.review
             )
+            self.memory.compute = self.scheduling.compute
             self.persona = PersonaService(self.persona_repository, self.state, sync_persona)
             self.prompts = PromptService(self.prompt_repository, self.persona)
             self.prompts.load()
@@ -102,7 +113,7 @@ class Application:
                 self.state, self.messages.last_bot_reply_to, self.interest
             )
             self.expression = ExpressionService(
-                self.state, self.persona_repository, self.expressions, model, error
+                self.state, self.persona_repository, self.expressions, expression_model, error
             )
             self.outbound = Outbound(self)
             from .persistence.outbox import OutboxRepository
@@ -110,7 +121,9 @@ class Application:
             from .services.notification_outbox import NotificationOutbox
             self.notification_outbox = NotificationOutbox(OutboxRepository(self.database),
                 NotificationRepository(self.database), self.inbox, self.decisions, error)
+            self.notification_outbox.scheduling = self.scheduling
             self.notification_outbox.record = self.outbound.record
+            self.notification_outbox.persona = self.outbound.persona
             self.expression.outbound = self.outbound
             self.materials = Materials(self)
             self.attachments = Attachments(self)
@@ -119,6 +132,7 @@ class Application:
                 state=self.state, messages=self.messages, digests=self.digests, people=self.people,
                 memory=self.memory, review=self.review, runs=self.runs, model=model, error=error,
             )
+            self.consolidation.compute = self.scheduling.compute
             self.digest = DigestService(
                 state=self.state, messages=self.messages, digests=self.digests, people=self.people,
                 memory=self.memory, glossary=self.glossary, review=self.review, runs=self.runs,
@@ -145,7 +159,11 @@ class Application:
             self.scheduler = Scheduler(
                 self.state, self.learning, self.memory, error,
                 digest=self.digest, consolidation=self.consolidation, skills=self.skills,
+                scheduling=self.scheduling,
             )
+            if fresh_database:
+                from .services.upgrades import record_new_database
+                record_new_database(self.database)
         except BaseException:
             self.database.close()
             raise
@@ -173,6 +191,7 @@ class Application:
             self.learning_repository.recover_interrupted()
             self.runs.recover_interrupted()
             self.tasks.spawn(self.scheduler.run())
+            self.history.start()
             self.attachments.resume()
             self.started = True
 
@@ -182,5 +201,6 @@ class Application:
         try:
             await self.tasks.close()
         finally:
+            self.scheduling.close()
             self.database.close()
             self.closed = True

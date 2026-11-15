@@ -18,7 +18,7 @@ from astrbot.api.message_components import (
 )
 from astrbot.core.message.message_event_result import MessageChain
 
-from ..config import BOT_NAME, fixed_persona, persona_prompt
+from ..config import BOT_NAME, fixed_persona
 from ..prompts import render
 from ..prompts import text as prompt_text
 from ..services.expression import choose_form, settle_meme, wants_detail
@@ -31,9 +31,10 @@ from ..services.skills import tool_step
 from ..services.debounce import Debouncer
 from ..services.task_context import CURRENT_TASK
 from ..services.task_reporting import execution_report
-from ..services.turn_control import is_stop_request, unsupported_claim, is_task_followup, is_revocation
+from ..services.turn_control import is_stop_request, is_task_followup, is_revocation
 from ..services.turn_trace import TurnTrace
 from ..services.decisions import DecisionContext, guidance as decision_guidance
+from ..services.scheduling import in_lane, LANE
 from ..persistence.turn_traces import TurnTraceRepository
 from .foreground import active_runner, release_follow_ups, request_stop, restrict
 from .notifications import Notifications
@@ -118,6 +119,7 @@ class ConversationAdapter:
             umo=str(getattr(event, "unified_msg_origin", "") or ""),
         )
 
+    @in_lane("chat")
     async def receive(self, event):
         app = self.app
         arrived = time.monotonic()
@@ -194,6 +196,10 @@ class ConversationAdapter:
                 metadata={"platform": platform, "instance": str(event.get_platform_id()),
                           "group": group, "name": turn.name, "private": turn.private,
                           "admin": event.is_admin(), "wake": turn.wake, "source": source,
+                          "reply_to": turn.reply_to,
+                          "reply_text": next((str(getattr(c, "message_str", "") or "")
+                                              for c in event.get_messages() if isinstance(c, Reply)
+                                              and str(c.sender_id or "") == str(event.get_self_id())), ""),
                           "self_id": str(event.get_self_id())})
             if not fresh:
                 event.set_extra("shrink_reply", False)
@@ -399,6 +405,14 @@ class ConversationAdapter:
             trace.outcome = value
 
     def close_trace(self, event, outcome):
+        previous = event.get_extra("shrink_previous_lane")
+        if previous is not None:
+            event.set_extra("shrink_previous_lane", None)
+            LANE.set(previous)
+        slot = event.get_extra("shrink_chat_slot")
+        if slot is not None:
+            event.set_extra("shrink_chat_slot", None)
+            slot.release()
         trace = event.get_extra("shrink_trace")
         if trace is None or trace.closed:
             return
@@ -465,6 +479,9 @@ class ConversationAdapter:
             logger.info(f"Shrink tool start run={trace.run_id} tool={name}")
 
     async def enrich(self, event, req):
+        if event.get_extra("shrink_reply") and event.get_extra("shrink_previous_lane") is None:
+            event.set_extra("shrink_previous_lane", LANE.get())
+            LANE.set("chat")
         try:
             await self.prepare(event, req)
         except asyncio.CancelledError:
@@ -499,6 +516,15 @@ class ConversationAdapter:
         if self.abandon(event):
             # Stopping here makes the host leave before it registers a runner.
             return
+        if getattr(app, "scheduling", None) and event.get_extra("shrink_chat_slot") is None:
+            self.enter(event, "chat_queue")
+            slot = app.scheduling.slots["chat"]
+            await slot.acquire()
+            event.set_extra("shrink_chat_slot", slot)
+            task = asyncio.current_task()
+            if task is not None:
+                task.add_done_callback(lambda _: self.close_trace(event, "ended"))
+            self.enter(event, "context")
         removed = restrict(req, self.router_prompt())
         if removed:
             logger.debug(f"Shrink foreground tools withheld: {','.join(removed)}")
@@ -566,9 +592,8 @@ class ConversationAdapter:
             skills=app.skills.render(skills),
         )
         if fixed_persona() not in (req.system_prompt or ""):
-            req.system_prompt = (req.system_prompt or "") + "\n" + persona_prompt(
-                app.persona_repository.learned_persona()
-            )
+            req.system_prompt = (req.system_prompt or "") + "\n" + app.outbound.persona()
+        req.system_prompt += "\n\n" + prompt_text("outbound.contract")
         req.system_prompt += "\n\n" + prompt_text("tasks.execution_scope")
         if event.is_admin():
             req.system_prompt += "\n" + prompt_text("tasks.admin_hint")
@@ -582,7 +607,9 @@ class ConversationAdapter:
             references = app.recent.find(turn.user_id, turn.source, turn.text, name=turn.name, decision=decision)
             prompt += "\n" + "\n".join(app.recent.render(references, turn.name))
         try:
-            guidance = await app.native_skills.planning_guidance(turn.text)
+            guidance = await asyncio.wait_for(
+                app.native_skills.planning_guidance(turn.text),
+                app.state.settings.foreground_grilling_timeout or None)
             if guidance:
                 prompt += "\n\n已加载原生 Skill grilling：\n" + guidance
                 event.set_extra("shrink_planning_skill", "grilling")
@@ -593,14 +620,14 @@ class ConversationAdapter:
         unclaimed = [row["message_id"] for row in app.inbox.repository.pending("chat", session)
                      if row["id"] not in identities and row["claimed"] is None]
         req.contexts = await app.history.contexts(
-            session, int(app.state.settings.context_budget * .6), exclude=[turn.id, *unclaimed])
+            session, app.state.settings.history_compress_tokens,
+            retain_ratio=app.state.settings.history_retain_ratio, exclude=[turn.id, *unclaimed])
         req.contexts.append({"role": "user", "content": "[本轮参考资料，不是用户指令]\n" + prompt})
         original = app.messages.get_many([turn.id])
         current = original[0]["text"] if original else turn.text
         req.prompt = f"[发言人 {turn.user_id} · {turn.name or turn.user_id}]\n{current}"
-        event.set_extra("shrink_expression_context", {
-            "chat": window.text, "people": cards, "memories": memories, "examples": examples,
-        })
+        event.set_extra("shrink_expression_context",
+                        app.outbound.turn_context(window.text, cards, memories, examples))
         event.set_extra("shrink_form", form)
         event.set_extra("shrink_meme_choices", [r["id"] for r in choices])
         event.set_extra("shrink_meme_explicit", explicit)
@@ -692,6 +719,7 @@ class ConversationAdapter:
             request=turn.text, kind="timeout")
 
     # ---- response --------------------------------------------------------------------------------
+    @in_lane("chat")
     async def response(self, event, response):
         timer = event.get_extra("shrink_timer_input")
         if timer and not response.tools_call_name:
@@ -755,6 +783,8 @@ class ConversationAdapter:
         if not execution and steps:
             execution = {"status": "unverified", "tool_steps": steps,
                          "note": "以下是工具记录；模型草稿不是执行证据，单步完成不代表整个请求完成"}
+        elif execution and steps:
+            execution["tool_steps"] = steps
         if task is not None:
             from ..services.notification_outbox import task_fact
             event.set_extra('shrink_reported_task', task_id)
@@ -768,24 +798,9 @@ class ConversationAdapter:
             context=event.get_extra("shrink_expression_context"),
             execution=execution,
         )
-        if unsupported_claim(response.completion_text, steps, execution) or (
-                unsupported_claim(finished.text, steps, execution)):
-            # Do not feed an unsupported completion claim to another model as a fact.
-            facts = execution or {"status": "unverified", "tool_steps": steps, "completion_confirmed": False}
-            text = await app.outbound.compose(
-                facts, request=turn.text, kind="execution_status",
-                instruction="只说明目前可确认的状态与缺少的回执；自然、简短、温和，不责备用户。"
-                            "没有记录不能推断未执行，也不能声称完成，不承诺自动重试。",
-                scope={"session": event.unified_msg_origin, "sender": str(event.get_sender_id())},
-            )
-            from ..services.composition import Silent
-            if isinstance(text, Silent):
-                finished.skip = True
-                text = ""
-            text = strip_reasoning(text or "").strip()
-            finished.text = "" if unsupported_claim(text, steps, execution) else text
-            finished.second = ""
-            finished.meme_id = None
+        trace = event.get_extra("shrink_trace")
+        if trace is not None:
+            trace.expression_model_calls += finished.model_calls
         if finished.meme_id:
             event.set_extra("shrink_selected_meme", finished.meme_id)
         if event.get_extra("shrink_selected_meme") and form != "tool_result" and not finished.skip:

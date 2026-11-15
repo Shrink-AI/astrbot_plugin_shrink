@@ -2,6 +2,8 @@ import asyncio
 import socket
 import time
 from contextlib import contextmanager
+from contextvars import copy_context
+from .services.scheduling import LANE, EXPRESSION_CALLS
 
 import uvicorn
 
@@ -21,7 +23,10 @@ class Tasks:
         if self.closed:
             coroutine.close()
             raise RuntimeError("Background tasks have stopped")
-        task = asyncio.create_task(coroutine)
+        context = copy_context()
+        context.run(LANE.set, "maintenance")
+        context.run(EXPRESSION_CALLS.set, None)
+        task = asyncio.create_task(coroutine, context=context)
         self.jobs.add(task)
         task.add_done_callback(self.finished)
         return task
@@ -41,13 +46,20 @@ class Tasks:
 
 class Scheduler:
     def __init__(self, state, learning, memory, error, digest=None, consolidation=None,
-                 skills=None, startup_delay=90):
+                 skills=None, startup_delay=90, scheduling=None):
         self.state, self.learning, self.memory, self.error = state, learning, memory, error
         self.digest, self.consolidation, self.skills = digest, consolidation, skills
         # AstrBot loads model providers after plugins initialise; let it finish first.
         self.startup_delay = startup_delay
+        self.scheduling = scheduling
 
     async def tick(self):
+        if self.scheduling is None:
+            return await self._tick()
+        async with self.scheduling.use("maintenance"):
+            return await self._tick()
+
+    async def _tick(self):
         last = self.state.get("last_learning_check", 0)
         if time.time() - last >= self.state.settings.learning_hours * 3600:
             await self.learning.learn()

@@ -21,7 +21,8 @@ class AuthorizationAdapter:
             devices = await self.command(body["provider"], "devices", {}, {
                 "session": body["origin"], "sender": account, "admin": True})
             if not isinstance(devices, list) or not any(
-                d.get("id") == body["device"] and not d.get("revoked") and d.get("access") in {"owner", "delegated"}
+                d.get("id") == body["device"] and not d.get("revoked")
+                and ("access" not in d or d["access"] in {"owner", "delegated"})
                 for d in devices
             ):
                 return False
@@ -38,8 +39,18 @@ class AuthorizationAdapter:
             return self.service.change(input_id, scope, arguments["policy_id"],
                                        "paused" if action == "pause" else "revoked")
         if action == "answer":
-            self.service.answer(input_id, scope, arguments["confirmation_id"], arguments["task"])
-            return await self.service.process(arguments["confirmation_id"], input_id)
+            identity = arguments.get("confirmation_id")
+            if not identity:
+                candidates = self.service.answer_candidates(input_id, scope)
+                if len(candidates) != 1:
+                    for row in candidates:
+                        await self.ask(row)
+                    return {"state": "waiting_user", "reason": "请明确要答复的任务或确认对象",
+                            "confirmations": [r["id"] for r in candidates]}
+                identity = candidates[0]["id"]
+            row = self.service.repository.event(identity)
+            self.service.answer(input_id, scope, identity, arguments.get("task", row["body"]["task"]))
+            return await self.service.process(identity, input_id)
         if action == "reconcile":
             row = self.service.repository.event(arguments["confirmation_id"])
             if not scope.get("admin") or not self.service.is_admin(str(scope["sender"])) or (

@@ -62,6 +62,9 @@ async def test_management_endpoints(tmp_path):
         assert latency["all"]["turns"] == 1 and latency["all"]["lock"]["p95"] == 3.0
         assert latency["outcomes"]["sent"]["total"]["max"] == 5.0
         assert latency["slowest"][0]["run_id"] == "r1"
+        assert latency["slowest"][0]["expression_model_calls"] == 0
+        assert latency["all"]["expression_model_calls"] == {
+            "total": 0, "max": 0, "zero_turns": 1, "measured_turns": 1}
 
         people = (await client.get("/api/v1/people?q=小甲")).json()
         assert people[0]["id"] == PERSON_A and {n["name"] for n in people[0]["nicknames"]} >= {"小甲"}

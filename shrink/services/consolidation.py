@@ -25,6 +25,7 @@ class ConsolidationService:
         self.model, self.error = model, error
         self.lock = asyncio.Lock()
         self.capabilities = None
+        self.compute = asyncio.to_thread
 
     # ---- cards -------------------------------------------------------------------------------------
     async def profile(self, uid, run_id=None):
@@ -92,7 +93,7 @@ class ConsolidationService:
                 for source in {d["source"] for d in self.digests.recent(limit=60) if d["created"] > since}:
                     if await self._safe(self.group(source, run_id)):
                         stats["groups"] += 1
-                stats["deduplicated"] = self.deduplicate(run_id)
+                stats["deduplicated"] = await self.deduplicate(run_id)
                 self.state.put("last_consolidation", time.time())
                 stats["errors"] = self.item_errors
                 self.runs.finish(run_id, "failed" if self.item_errors else "success", stats,
@@ -121,27 +122,42 @@ class ConsolidationService:
                 self.item_errors.append(type(exc).__name__)
             return False
 
-    def deduplicate(self, run_id, limit=50):
+    async def deduplicate(self, run_id, limit=50):
         """Merge near-identical live memories about the same subject; the newer one survives."""
         merged = 0
-        index = self.memory.repository.vector_index
+        index = dict(self.memory.repository.vector_index)
         subjects = self.memory.repository.subjects_updated_since(0, 200)
         for subject in subjects:
             for kind in ("impression", "event"):
                 rows = sorted(
                     self.memory.repository.same_kind(subject, kind), key=lambda r: r["updated"]
                 )
-                for i, old in enumerate(rows):
-                    for new in rows[i + 1 :]:
-                        a, b = index.get(old["id"]), index.get(new["id"])
-                        if not a or not b or len(a) != len(b) or old["verified"] == 1:
-                            continue
-                        if sum(x * y for x, y in zip(a, b)) >= 0.92:
-                            self.memory.repository.update(
-                                old["id"], run_id, status="superseded", superseded_by=new["id"]
-                            )
-                            merged += 1
-                            break
+                if len(rows) < 2:
+                    continue
+                snapshot = {row["id"]: row for row in rows}
+                pairs = await self.compute(self.duplicates, rows, index, limit - merged)
+                for old, new in pairs:
+                    current = [self.memory.repository.get(identity) for identity in (old, new)]
+                    if any(not row or row["updated"] != snapshot[row["id"]]["updated"]
+                           for row in current):
+                        continue
+                    self.memory.repository.update(old, run_id, status="superseded", superseded_by=new)
+                    merged += 1
                     if merged >= limit:
                         return merged
         return merged
+
+    @staticmethod
+    def duplicates(rows, index, limit):
+        pairs = []
+        for i, old in enumerate(rows):
+            for new in rows[i + 1:]:
+                a, b = index.get(old["id"]), index.get(new["id"])
+                if not a or not b or len(a) != len(b) or old["verified"] == 1:
+                    continue
+                if sum(x * y for x, y in zip(a, b)) >= 0.92:
+                    pairs.append((old["id"], new["id"]))
+                    break
+            if len(pairs) >= limit:
+                break
+        return pairs

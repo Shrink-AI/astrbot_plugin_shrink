@@ -12,6 +12,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse
 from ..services.memes import MAX_IMAGE_BYTES
 from .schemas import Login, PasswordChange
+from ..services.scheduling import in_lane
 
 
 def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None, inbox=None):
@@ -29,6 +30,7 @@ def install_auth(app, state, sessions, allowed_hosts, allowed_origins=None, inbo
     cookie_name = "shrink_session"
 
     @app.middleware("http")
+    @in_lane("interactive")
     async def guard(request: Request, call_next):
         if request.headers.get("host") not in allowed_hosts:
             return JSONResponse({"detail": "不允许的访问地址"}, status_code=400)

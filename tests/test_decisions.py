@@ -45,9 +45,7 @@ async def test_rules_direct_skip_models_and_persist_ratio(app):
     {"task": "made-up", "route": "attach_task", "intent": "supplement"},
     {"conversation": "other:room"},
     {"permission": "admin"},
-    {"capability_candidates": ["imaginary"]},
     {"topic": "imaginary"},
-    {"evidence": ["fabricated"]},
     {"route": "stop"},
 ])
 async def test_d02_invalid_or_authority_expanding_model_output_is_rejected(app, change):
@@ -58,6 +56,22 @@ async def test_d02_invalid_or_authority_expanding_model_output_is_rejected(app, 
     assert result["decision"]["task"] is None
     model.assert_awaited_once()
     assert app.inbox.repository.get(event["id"])["processed"] is None
+
+
+@pytest.mark.usefixtures("app")
+async def test_format_normalization_keeps_model_decision_and_persists_known_references(request):
+    application = request.getfixturevalue("app")
+    event, _ = receive(application, text="帮我查天气")
+    backend(application, answer(event, intent="query", evidence=["event.text", "weather"],
+                       capability_candidates=["unknown", "weather"], confidence=.9))
+    result = await application.decisions.decide(
+        event["id"], DecisionContext(direct=True), [{"name": "weather", "description": "查天气"}])
+    assert not result["fallback"] and result["reason"] == "validated"
+    assert result["decision"]["intent"] == "query"
+    assert result["decision"]["evidence"] == [event["id"]]
+    assert result["decision"]["capability_candidates"] == ["weather"]
+    saved = application.decisions.repository.list()[0]
+    assert saved["decision"]["evidence"] == [event["id"]]
 
 
 @pytest.mark.parametrize("mode", ["timeout", "format"])

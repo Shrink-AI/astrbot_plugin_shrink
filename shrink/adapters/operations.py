@@ -13,6 +13,7 @@ from .admin_events import admin_event, admin_candidates
 from .notifications import Notifications
 from ..services.task_context import CURRENT_TASK
 from ..prompts import text as prompt_text
+from ..services.scheduling import shared_lock
 
 
 class Operations(AgentTasks):
@@ -29,7 +30,8 @@ class Operations(AgentTasks):
         self.init_agents()
         from ..services.task_execution import TaskExecution
         self.execution = TaskExecution(self.task_states, self.task_inputs, self.clarifications,
-                                       self.execute_task, self.deliver_completed, self.app.tasks.error)
+                                       self.execute_task, self.deliver_completed, self.app.tasks.error,
+                                       getattr(self.app, "scheduling", None))
         self.running = self.execution.running
         self.task_states.migrate()
         self.task_states.recover()
@@ -46,10 +48,10 @@ class Operations(AgentTasks):
 
     async def manage_native(self, resource, action, arguments=None, confirmed=False):
         if resource == "subagents" and action == "update":
-            async with self.agent_config_lock:
+            async with shared_lock(self.agent_config_lock):
                 return await self.app.native.call(resource, action, arguments, confirmed)
         if resource == "skills" and action in {"create", "write", "update", "delete"}:
-            async with self.app.native_skills.lock:
+            async with shared_lock(self.app.native_skills.lock):
                 return await self.app.native.call(resource, action, arguments, confirmed)
         return await self.app.native.call(resource, action, arguments, confirmed)
 

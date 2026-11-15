@@ -1,16 +1,23 @@
 """Role-preserving context with bounded, referenced compression."""
 import asyncio
 import json
+import re
+import time
+import uuid
 
 from ..persistence.execution_context import checkpoint_value
 from ..prompts import render, text as prompt_text
+from .scheduling import in_lane
 
 
 class ConversationHistory:
     def __init__(self, repository, messages, model, error):
         self.repository, self.messages = repository, messages
         self.model, self.error = model, error
-        self.timeout = 3
+        self.timeout = 180
+        self.retry_delays = (2, 4)
+        self.spawn = self.scheduling = None
+        self.worker = None
         self.locks = {}
 
     def sent(self, session, source, text, sender="", reason="", *, identity):
@@ -106,71 +113,161 @@ class ConversationHistory:
 
     @staticmethod
     def size(message):
-        return len(json.dumps(message, ensure_ascii=False))
+        text = json.dumps(message, ensure_ascii=False)
+        cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in text)
+        emoji = len(re.findall("[\u200d\u2600-\u27bf\ufe00-\ufe0f\U0001f000-\U0001faff]", text))
+        return max(1, int(cjk * .6 + emoji * 2 + (len(text) - cjk - emoji) * .3))
 
     @staticmethod
     def tail(items, budget):
         used, cut = 0, len(items)
         for index in range(len(items) - 1, -1, -1):
             cost = ConversationHistory.size(items[index][1])
-            if used + cost > budget:
+            if used + cost > budget and cut < len(items):
                 break
             used += cost
             cut = index
-        # Never orphan a tool result by cutting between the call and its result.
-        while cut < len(items) and items[cut][1]["role"] == "tool":
-            cut += 1
+        # Keep the newest complete block, including a single oversized message.
+        while 0 < cut < len(items) and items[cut][1]["role"] == "tool":
+            cut -= 1
         while (0 < cut < len(items) and items[cut][0].get("_block") is not None
                and items[cut][0].get("_block") == items[cut - 1][0].get("_block")):
-            cut += 1
+            cut -= 1
         return cut
 
-    async def contexts(self, session, budget, *, exclude=()):
-        lock = self.locks.setdefault(session, asyncio.Lock())
-        async with lock:
-            rows = self.repository.events(session)
-            items = [(r, m) for r, m in self.render(rows) if r["message_id"] not in exclude]
-            checkpoint = self.repository.checkpoint(session)
-            if checkpoint:
-                items = [(r, m) for r, m in items if r["id"] > checkpoint["end_event"]]
-            summary = self.summary_message(checkpoint) if checkpoint else None
-            size = sum(self.size(m) for _, m in items) + (self.size(summary) if summary else 0)
-            if size <= budget:
-                return ([summary] if summary else []) + [m for _, m in items]
-            cut = self.tail(items, max(0, int(budget * .6) - 240))
+    async def contexts(self, session, budget, *, exclude=(), retain_ratio=.65):
+        # No await between reading and persisting the boundary: concurrent requests on
+        # the owning event loop see the same committed window, without a model lock.
+        rows = self.repository.events(session)
+        items = [(r, m) for r, m in self.render(rows) if r["message_id"] not in exclude]
+        checkpoint = self.repository.window(session)
+        if checkpoint:
+            items = [(r, m) for r, m in items if r["id"] > checkpoint["end_event"]]
+        # Reserve the same summary capacity before and after it lands, so its arrival
+        # cannot itself trigger another boundary change.
+        reserved = checkpoint["summary_tokens"] if checkpoint else 0
+        if sum(self.size(m) for _, m in items) + reserved >= budget:
+            cut = self.tail(items, max(1, int(budget * retain_ratio)))
             boundary = min((r["id"] for r in rows if r["message_id"] in exclude), default=float("inf"))
-            cut = min(cut, next((index for index, (r, _) in enumerate(items) if r["id"] >= boundary),
-                                len(items)))
+            cut = min(cut, next((i for i, (r, _) in enumerate(items) if r["id"] >= boundary), len(items)))
             while (0 < cut < len(items) and items[cut][0].get("_block") is not None
                    and items[cut][0].get("_block") == items[cut - 1][0].get("_block")):
                 cut -= 1
             covered, tail = items[:cut], items[cut:]
             if covered:
-                prompt = render("history.compress", messages=json.dumps(
-                    ([summary] if summary else []) + [m for _, m in covered], ensure_ascii=False))
-                try:
-                    result = await asyncio.wait_for(self.model(prompt, prompt_text("history.compress_system")),
-                                                    self.timeout)
-                    if not result or not result.strip():
-                        raise ValueError("empty conversation summary")
-                    latest = self.repository.events(session)
-                    if any(r["id"] > rows[-1]["id"] and r["kind"] in {"corrected", "retracted"} for r in latest):
-                        current = [(r, m) for r, m in self.render(latest) if r["message_id"] not in exclude]
-                        return [m for _, m in current[self.tail(current, budget):]]
-                    refs = list(dict.fromkeys(
-                        (json.loads(checkpoint["message_refs"]) if checkpoint else []) +
-                        [r["message_id"] for r, _ in covered if r["message_id"]]))
-                    self.repository.compress(session, checkpoint["start_event"] if checkpoint else covered[0][0]["id"],
-                                             max(r["id"] for r, _ in covered),
-                                             result.strip()[:max(1, int(budget * .25))], refs)
-                    summary = self.summary_message(self.repository.checkpoint(session))
-                    kept = self.tail(tail, max(0, budget - self.size(summary)))
-                    return [summary] + [m for _, m in tail[kept:]]
-                except Exception as exc:
-                    self.error("history_compression", exc)
-            # Originals remain queryable even when no summary fits or the summary model fails.
-            cut = self.tail(items, budget)
-            return [m for _, m in items[cut:]]
+                refs = list(dict.fromkeys(
+                    (json.loads(checkpoint["message_refs"]) if checkpoint else []) +
+                    [r["message_id"] for r, _ in covered if r["message_id"]]))
+                checkpoint = self.repository.reserve(
+                    session, checkpoint["start_event"] if checkpoint else covered[0][0]["id"],
+                    max(r["id"] for r, _ in covered), refs, budget, max(1, min(4000, int(budget * .2))))
+                items = tail
+                self.schedule()
+        return ([self.summary_message(checkpoint)] if checkpoint else []) + [m for _, m in items]
+
+    def start(self):
+        self.repository.recover_summaries(len(self.retry_delays) + 1)
+        self.schedule()
+
+    def schedule(self):
+        if self.spawn and (self.worker is None or self.worker.done()) and self.repository.pending():
+            self.worker = self.spawn(self.summarize_pending())
+
+    @in_lane("maintenance")
+    async def summarize_pending(self):
+        if self.scheduling:
+            async with self.scheduling.use("maintenance"):
+                await self._summarize_pending()
+        else:
+            await self._summarize_pending()
+
+    @staticmethod
+    def summary_input_limit(checkpoint):
+        # A full checkpoint window covers every allowed retention ratio without
+        # depending on later settings changes; allow summary and rendering overhead.
+        budget = checkpoint["window_budget"]
+        return max(32000, budget + checkpoint["summary_tokens"] + max(4000, (budget + 9) // 10))
+
+    def compression_prompt(self, checkpoint, previous, covered, system):
+        input_limit = self.summary_input_limit(checkpoint)
+        allowance = max(1, checkpoint["summary_tokens"] - self.size(self.summary_message(
+            {**checkpoint, "summary": ""})))
+        # Only block boundaries are candidates: never separate a tool call/result,
+        # even when a single block exceeds the entire summary input allowance.
+        starts = [i for i, (row, _) in enumerate(covered)
+                  if i == 0 or row.get("_block", row["id"]) != covered[i - 1][0].get(
+                      "_block", covered[i - 1][0]["id"])] + [len(covered)]
+        prefix = [self.summary_message(previous)] if previous else []
+
+        def build(index):
+            omitted = index > 0 or (previous is not None and not prefix)
+            material = ([{"role": "user", "content":
+                         "[前面还有未包含的更早记录；可通过本检查点的原文引用取回。]"}] if omitted else [])
+            material += prefix + [m for _, m in covered[starts[index]:]]
+            return render("history.compress", messages=json.dumps(material, ensure_ascii=False),
+                          max_tokens=allowance)
+
+        def fits(prompt):
+            return (self.size({"role": "user", "content": prompt}) +
+                    self.size({"role": "system", "content": system})) <= input_limit
+
+        full = build(0)
+        if fits(full):
+            return full
+        # Prefer recent originals if an older summary would leave no room for the
+        # newest complete block. Its originals remain in this checkpoint's refs.
+        if prefix and not fits(build(max(0, len(starts) - 2))):
+            prefix = []
+        low, high = 0, len(starts) - 1
+        while low < high:
+            middle = (low + high) // 2
+            if fits(build(middle)):
+                high = middle
+            else:
+                low = middle + 1
+        prompt = build(low)
+        if not fits(prompt):
+            raise ValueError("history compression template exceeds input budget")
+        return prompt
+
+    async def _summarize_pending(self):
+        while pending := self.repository.pending():
+            checkpoint = pending[0]
+            delay = checkpoint["summary_next_run"] - time.time()
+            if delay > 0:
+                await asyncio.sleep(min(delay, 4))
+                continue
+            claim = uuid.uuid4().hex
+            if not self.repository.claim_summary(checkpoint["id"], claim):
+                continue
+            try:
+                previous = self.repository.previous_summary(checkpoint)
+                rows = self.repository.events(checkpoint["session"])
+                covered = [(r, m) for r, m in self.render(rows)
+                           if (previous["end_event"] if previous else checkpoint["start_event"] - 1)
+                           < r["id"] <= checkpoint["end_event"]]
+                system = prompt_text("history.compress_system")
+                prompt = self.compression_prompt(checkpoint, previous, covered, system)
+                result = await asyncio.wait_for(self.model(prompt, system), self.timeout)
+                if not result or not result.strip():
+                    raise ValueError("empty conversation summary")
+                text = result.strip()
+                low, high = 0, len(text)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if self.size(self.summary_message({**checkpoint, "summary": text[:middle]})) <= (
+                            checkpoint["summary_tokens"]):
+                        low = middle
+                    else:
+                        high = middle - 1
+                self.repository.finish_summary(checkpoint["id"], claim, summary=text[:low])
+            except Exception as exc:
+                self.error("history_compression", exc)
+                attempt = checkpoint["summary_attempts"]
+                retry = attempt < len(self.retry_delays)
+                self.repository.finish_summary(
+                    checkpoint["id"], claim, state="pending" if retry else "failed",
+                    next_run=time.time() + self.retry_delays[attempt] if retry else 0)
 
     @staticmethod
     def summary_message(checkpoint):

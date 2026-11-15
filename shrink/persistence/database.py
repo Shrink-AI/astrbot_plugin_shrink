@@ -8,15 +8,16 @@ from .schema import migrate_schema
 
 
 class Database:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, filename="shrink.db", initialize=True):
         self.root = root
         self._transaction_depth = 0
         root.mkdir(parents=True, exist_ok=True)
         (root / "memes").mkdir(exist_ok=True)
-        self.connection = sqlite3.connect(root / "shrink.db")
+        self.connection = sqlite3.connect(root / filename)
         self.connection.row_factory = sqlite3.Row
         try:
-            migrate_schema(self.connection)
+            if initialize:
+                migrate_schema(self.connection)
         except BaseException:
             self.connection.close()
             raise

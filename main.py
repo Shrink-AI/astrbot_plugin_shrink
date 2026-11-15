@@ -8,7 +8,7 @@ from .shrink.prompts import text as prompt_text, tool_doc
 from .shrink.adapters.host import PluginHost
 
 
-@register("astrbot_plugin_shrink", "Shrink", "石英：人格、记忆、学习和表情", "0.7.0")
+@register("astrbot_plugin_shrink", "Shrink", "石英：人格、记忆、学习和表情", "0.9.0")
 class ShrinkPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -193,6 +193,7 @@ class ShrinkPlugin(Star):
                 raise ValueError('逐次批准请用 shrink_authorization answer，绑定本轮用户输入、任务与确认对象')
             if capability == 'computer.control' and operation in {'ungrant', 'revoke'}:
                 candidates = [c['provider'] for c in bus.catalog() if c['name'] == capability
+                              and operation in c.get('actions', {})
                               and (not provider or c['provider'] == provider)]
                 if len(candidates) != 1:
                     raise ValueError('请明确设备能力提供者')

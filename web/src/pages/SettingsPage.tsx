@@ -77,7 +77,9 @@ export function SettingsPage() {
             {num('engaged_seconds', '接着聊的时间窗口（秒）', 0, 1800, 10, '石英回复某人后，这段时间内 TA 不 @ 也算在跟石英说话')}
             {num('stale_seconds', '插话过期时间（秒）', 10, 3600, 5, '超过这个时间且群里已聊了 3 条以上，就不再插话')}
             {num('split_probability', '偶尔分两条发的概率', 0, 1, 0.01)}
-            {num('context_budget', '群聊上下文字数预算', 1000, 20000, 100)}
+            {num('history_compress_tokens', '会话历史压缩阈值（估算 token）', 1000, 2000000, 1000)}
+            {num('history_retain_ratio', '压缩后最近原文保留比例', 0.1, 0.9, 0.05)}
+            {num('context_budget', '辅助上下文字数预算', 1000, 20000, 100)}
             {flag('debounce_enabled', '合并同一个人的连续短消息')}
             {num('debounce_seconds', '等下一条消息（秒）', 0.1, 5, 0.1)}
             {num('debounce_max_seconds', '连续发言最多等待（秒）', 1, 15, 0.5)}
@@ -110,11 +112,15 @@ export function SettingsPage() {
             {num('glossary_per_run', '每次整理最多查几个黑话', 0, 10)}
             {num('recall_count', '每次最多带几条记忆', 1, 20)}
             {num('memory_budget', '记忆字数预算', 200, 4000, 50)}
+            {num('foreground_retrieval_timeout', '前台检索预算（秒）', 0.1, 300, 0.1, '默认 10 秒，线上测量后再调')}
+            {num('foreground_rerank_timeout', '前台重排预算（秒）', 0.1, 300, 0.1, '默认 20 秒；资源忙时跳过，线上测量后再调')}
           </FieldGroup>
         </Section>
         <Section title="工具与经验" desc="决定石英能不能用工具办事，以及经验记在哪里。">
           <FieldGroup className="flex flex-col gap-5">
             {flag('skills_enabled', '用工具办事后复盘，积累并修正经验')}
+            {num('foreground_grilling_timeout', 'grilling 准备预算（秒）', 0, 300, 0.1, '默认 0，不额外限时；线上测量后再调')}
+            {num('notification_max_delay', '必要通知最长推迟（秒）', 0, 86400, 1, '默认 60；超过后不再因前台活跃而延后')}
             <Field>
               <FieldContent>
                 <FieldLabel htmlFor="setting-sandbox_url">Python 沙箱地址</FieldLabel>

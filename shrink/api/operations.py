@@ -124,6 +124,7 @@ def router_for(app):
         if body['capability'] == 'computer.control' and body['action'] in {'ungrant', 'revoke'}:
             args = body.get('arguments', {})
             providers = [c['provider'] for c in app.plugin_bus.catalog() if c['name'] == 'computer.control'
+                         and body['action'] in c.get('actions', {})
                          and (not body.get('provider') or c['provider'] == body['provider'])]
             if len(providers) != 1:
                 raise ValueError('请明确设备能力提供者')

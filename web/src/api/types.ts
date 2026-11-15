@@ -20,7 +20,13 @@ export interface Settings {
   meme_cooldown: number;
   meme_repeat_cooldown: number;
   recall_count: number;
+  foreground_retrieval_timeout: number;
+  foreground_rerank_timeout: number;
+  foreground_grilling_timeout: number;
+  notification_max_delay: number;
   context_budget: number;
+  history_compress_tokens: number;
+  history_retain_ratio: number;
   memory_budget: number;
   digest_enabled: boolean;
   verify_enabled: boolean;
