@@ -1,6 +1,7 @@
 """Role-preserving context with bounded, referenced compression."""
 import asyncio
 import json
+import logging
 import re
 import time
 import uuid
@@ -9,6 +10,7 @@ from ..persistence.execution_context import checkpoint_value
 from ..prompts import render, text as prompt_text
 from .scheduling import in_lane
 from .models import for_source
+from .tool_projection import brief, receipt
 
 
 class ConversationHistory:
@@ -83,6 +85,11 @@ class ConversationHistory:
                 message["content"] = f"[发言人 {row['speaker']} · {row['speaker_name'] or row['speaker']}]\n{text}"
             if row["tool_calls"]:
                 calls = json.loads(row["tool_calls"])
+                calls = [{**call, "function": {**call["function"],
+                          "arguments": json.dumps({"record_ref": "event:" + str(row["id"]),
+                                                   "summary": brief(call["function"].get("arguments"), 240)},
+                                                  ensure_ascii=False)}} if len(
+                              call["function"].get("arguments", "")) > 240 else call for call in calls]
                 if not all(call["id"] in results for call in calls):
                     message = {"role": "user", "content": "[工具结果未知，先核对副作用，不能盲目重做] " +
                                json.dumps(calls, ensure_ascii=False)}
@@ -90,6 +97,9 @@ class ConversationHistory:
                     message["tool_calls"] = calls
             if row["tool_call_id"]:
                 message["tool_call_id"] = row["tool_call_id"]
+                if len(text) > 500:
+                    message["content"] = json.dumps(receipt(
+                        text, row["message_id"], 500), ensure_ascii=False)
             rendered.append((row, message))
         ordered, index = [], 0
         while index < len(rendered):
@@ -164,6 +174,13 @@ class ConversationHistory:
                     max(r["id"] for r, _ in covered), refs, budget, max(1, min(4000, int(budget * .2))))
                 items = tail
                 self.schedule()
+        logging.getLogger(__name__).info(
+            "Shrink history session=%s stored_events=%d loaded_messages=%d excluded=%d "
+            "first_event=%s last_event=%s checkpoint=%s checkpoint_state=%s budget=%d",
+            session, len(rows), len(items), len(exclude),
+            items[0][0]["id"] if items else None, items[-1][0]["id"] if items else None,
+            checkpoint["id"] if checkpoint else None,
+            checkpoint.get("summary_state") if checkpoint else None, budget)
         return ([self.summary_message(checkpoint)] if checkpoint else []) + [m for _, m in items]
 
     def start(self):

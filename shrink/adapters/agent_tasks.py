@@ -40,6 +40,11 @@ class AgentTasks:
             raise ValueError('仅管理员可编排任务')
         if not isinstance(args, dict):
             raise ValueError('arguments必须是JSON对象')
+        from ..services.task_context import CURRENT_TASK
+        if getattr(event, "get_extra", lambda key: None)("shrink_reply") and not CURRENT_TASK.get():
+            from .foreground import FRONT_ACTIONS
+            if action not in FRONT_ACTIONS:
+                raise ValueError("前台只接话和管理任务；执行工作请用dispatch交给同构体")
         if action == 'dispatch':
             request = args.get('request', '')
             if not isinstance(request, str) or not request.strip() or len(request) > 32000:
@@ -49,12 +54,23 @@ class AgentTasks:
                 if previous['request'] != request:
                     raise ValueError('本轮已提交任务，请先回复；补充要求使用原任务')
                 return previous['result']
+            original = event.get_extra("shrink_turn")
+            material = {"request": request}
+            if original:
+                material["original_request"] = original.text
+                material["source"] = original.source
+                quote = getattr(original, "quote", None)
+                if quote:
+                    material["quoted_context"] = quote
+            payload = json.dumps(material, ensure_ascii=False)
+            if len(payload) > 32000:
+                raise ValueError('任务与原始上下文合计超过32000字，请缩短派工说明')
             self.task_states.capacity('agent')
             agent = 'task_' + uuid.uuid4().hex[:12]
             await self.create_agent({
                 'name': agent, 'instructions': request[:12000], 'tools': ['*'],
             })
-            result = await self.submit_agent(event, agent, request)
+            result = await self.submit_agent(event, agent, payload)
             event.set_extra('shrink_dispatch', {'request': request, 'result': result})
             return result
         if action == 'guide':
@@ -70,12 +86,31 @@ class AgentTasks:
                              'options': ['可选方案']},
                 'resume_after_question': {'task_id': '待答复任务ID', 'answer': '原用户的答复'},
                 'append_input': {'task_id': '原任务ID；本轮决策已明确时可省略', 'text': '原创建者的补充要求；消息标识由入口获取'},
-                'list': {}, 'tools': {},
+                'list': {}, 'tools': {'query': '关键词短目录', 'offset': 0, 'limit': 20,
+                                     'name': '按名称读取参数并启用单个工具'},
                 'workflow': prompt_text('tasks.orchestrate.workflow'),
                 'limits': prompt_text('tasks.orchestrate.limits'),
             }
         if action == 'tools':
-            return await self.agent_tools()
+            runner = (event.get_extra("shrink_task_runners") or {}).get(CURRENT_TASK.get())
+            available = (runner.available_tools if runner is not None and hasattr(runner, "available_tools")
+                         else await self.agent_tools())
+            name = args.get("name")
+            if name:
+                found = next((tool for tool in available if tool["name"] == name), None)
+                if found is None:
+                    raise ValueError("当前任务没有这个工具")
+                if runner is not None and hasattr(runner, "load_tool"):
+                    runner.load_tool(name)
+                return found
+            query = str(args.get("query", "")).casefold()
+            matches = [t for t in available if query in (t["name"] + " " + t.get("description", "")).casefold()]
+            offset, limit = args.get("offset", 0), args.get("limit", 20)
+            if not isinstance(offset, int) or offset < 0 or not isinstance(limit, int) or not 1 <= limit <= 20:
+                raise ValueError("offset非负，limit为1至20")
+            return {"tools": [{"name": t["name"], "description": t.get("description", "")[:120]}
+                              for t in matches[offset:offset + limit]], "total": len(matches),
+                    "next_offset": offset + limit if offset + limit < len(matches) else None}
         if action == 'create':
             return await self.create_agent(args)
         if action == 'ask_user':
@@ -117,12 +152,15 @@ class AgentTasks:
                 target, event.unified_msg_origin, str(event.get_sender_id()),
                 str(identity) if identity is not None else '', args.get('text', ''))
         if action == 'list':
-            return [r for r in self.list() if r['session'] == event.unified_msg_origin
-                    and r['sender'] == str(event.get_sender_id())]
+            return [{"task_id": r["id"], "status": r["status"], "request": r["request"][:300],
+                     "result_ref": "task:" + r["id"]}
+                    for r in self.list() if r['session'] == event.unified_msg_origin
+                    and r['sender'] == str(event.get_sender_id())][:10]
         if action in {'status', 'cancel', 'resume'}:
             row = self.owned_task(event, args.get('task_id', ''))
             if action == 'status':
-                return row
+                from ..services.task_reporting import execution_report
+                return execution_report(row)
             if action == 'cancel':
                 return await self.cancel(row['id'])
             if row['status'] in {'queued', 'running', 'waiting_external', 'retry_wait', 'cancelling'}:
@@ -296,12 +334,16 @@ class AgentTasks:
         # Same native runner as handoff, with explicit hooks so partial writes survive timeouts.
         async def execute():
             from .task_runner import run_task_agent
+            experience = ""
+            skills = getattr(self.app, "skills", None)
+            if skills is not None:
+                experience = skills.render(await skills.relevant(request))
             return await run_task_agent(self.context,
                 event=event, chat_provider_id=handoff.provider_id, prompt=request,
                 system_prompt=handoff.agent.instructions + '\n' + prompt_text('tasks.execution_scope')
                     + '\n' + prompt_text('tasks.development_standard')
                     + '\n' + prompt_text('tasks.agent_resources')
-                    + '\n' + prompt_text('skills.authoring'), tools=tools,
+                    + '\n' + prompt_text('skills.authoring') + '\n' + experience, tools=tools,
                 contexts=handoff.agent.begin_dialogs or [], max_steps=128,
                 agent_hooks=AuditHooks(), inputs=self.task_inputs, task_id=CURRENT_TASK.get(),
                 wrapper=wrapper)

@@ -67,6 +67,7 @@ class RecentInteractions:
         now = now or time.time()
         request = text if request is None else request
         asked = (bool(decision["decision"]["topic"]) if decision and not decision["fallback"]
+                 and decision.get("reason") != "decision_disabled"
                  else bool(ASKED.search(request or "")))
         private_ok = is_private(source) or bool(PRIVATE.search(request or ""))
         since = now - (ASKED_SECONDS if asked else AUTO_SECONDS)

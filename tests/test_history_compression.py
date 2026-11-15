@@ -264,7 +264,7 @@ async def test_summary_input_is_bounded_to_recent_complete_blocks_after_missing_
     assert len(app.history.read_checkpoint(SESSION, checkpoint["id"])["originals"]) > 100
 
 
-async def test_oversized_summary_input_block_is_omitted_whole_but_stays_retrievable(app):
+async def test_oversized_tool_block_is_projected_and_stays_retrievable(app):
     app.history.spawn = None
     app.history.tool_start(SESSION, "huge-tool", "synthetic", {"query": "超大块" * 20000})
     app.history.tool_end(SESSION, "huge-tool", "超大块结果")
@@ -275,6 +275,6 @@ async def test_oversized_summary_input_block_is_omitted_whole_but_stays_retrieva
     app.history.model = AsyncMock(return_value="最近摘要")
     await app.history._summarize_pending()
     prompt = app.history.model.await_args.args[0]
-    assert "超大块" not in prompt and "最近完整记录0：" in prompt
-    assert "未包含的更早记录" in prompt
+    assert "超大块" * 20000 not in prompt and "最近完整记录0：" in prompt
+    assert "record_ref" in prompt
     assert app.history.read_checkpoint(SESSION, checkpoint["id"])["originals"]

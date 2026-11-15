@@ -20,6 +20,8 @@ async def select(decisions, row):
     notify = "action" if kind in URGENT else "normal"
     if kind in QUIET:
         notify, reason = "silent", "quiet_process"
+    elif kind in {"progress", "tool_progress"} and not decisions.state.settings.decision_enabled:
+        notify, reason = "silent", "decision_disabled"
     elif kind in {"progress", "tool_progress"}:
         backend = decisions.state.settings.decision_backend
         model = decisions.backends.get(backend)

@@ -6,6 +6,7 @@ export interface Settings {
   learning_provider: string;
   summary_provider: string;
   embedding_provider: string;
+  decision_enabled: boolean;
   decision_backend: 'haiku' | 'laya';
   decision_provider: string;
   decision_timeout: number;

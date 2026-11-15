@@ -42,7 +42,7 @@ async def test_real_explicit_code_reply_is_final_without_another_expression_call
 
 
 @pytest.mark.parametrize("budget", [None, 13])
-async def test_real_grilling_uses_no_extra_default_deadline_and_honors_setting(world, monkeypatch, budget):
+async def test_foreground_does_not_load_execution_grilling(world, monkeypatch, budget):
     waits = []
     original = asyncio.wait_for
     async def planning_guidance(text):
@@ -58,7 +58,7 @@ async def test_real_grilling_uses_no_extra_default_deadline_and_honors_setting(w
     monkeypatch.setattr(asyncio, "wait_for", wait)
     world.replies["查一下"] = ["好嘞"]
     await world.turn(Event(world, "查一下"))
-    assert world.sent == ["好嘞"] and waits == [budget]
+    assert world.sent == ["好嘞"] and waits == []
 
 
 async def test_t01_real_context_and_reply_finish_with_three_slots_and_waiting_work(world):

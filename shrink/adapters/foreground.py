@@ -4,6 +4,14 @@ The host runs one turn per session at a time, so anything slow here blocks every
 group. Long execution belongs to background tasks, which get their tools from their own
 definition and never pass through this module.
 """
+import copy
+import re
+
+FRONT_ACTIONS = {"dispatch", "list", "status", "append_input", "resume", "cancel"}
+FRONT_DESCRIPTION = (
+    "管理当前创建者的任务。dispatch一次提交后台同构体，request包含完整请求、来源、授权范围和验收。"
+    "list/status查状态，append_input追加原任务，cancel停止，resume仅在用户明确要求续做时使用。"
+    "arguments是JSON对象；查询/续做/取消指定task_id，追加指定task_id和text。")
 
 CHAT_TOOLS = frozenset({
     "shrink_lookup", "shrink_chat_history", "shrink_find_meme", "shrink_remember",
@@ -47,11 +55,28 @@ def task_statuses(operations, event, turn):
     listing = getattr(operations, "list", None)
     if not callable(listing):
         return []
-    return [{"task_id": row["id"], "request": row["request"][:500],
-             "status": row["status"], "result": row.get("result", "")[:1200]}
-            for row in listing()
+    rows = [row for row in listing()
             if row["sender"] == str(event.get_sender_id()) and
-            (row["session"] == event.unified_msg_origin or turn.private)][:4]
+            (row["session"] == event.unified_msg_origin or turn.private)]
+    decision = event.get_extra("shrink_decision") or {}
+    target = decision.get("decision", {}).get("task")
+    if target:
+        rows = [row for row in rows if row["id"] == target]
+    else:
+        text = getattr(turn, "text", "")
+        explicit = [row for row in rows if row["id"] in text]
+        if explicit:
+            rows = explicit
+        elif len(rows) != 1:
+            from ..text_rules import grams
+            query = set(grams(text))
+            ranked = [(len(query & set(grams(row["request"]))), row) for row in rows]
+            ranked.sort(key=lambda value: value[0], reverse=True)
+            rows = ([ranked[0][1]] if ranked and ranked[0][0] >= 2 and
+                    (len(ranked) == 1 or ranked[0][0] > ranked[1][0]) else [])
+    return [{"task_id": row["id"], "request": row["request"][:300],
+             "status": row["status"], "result": row.get("result", "")[:1200]}
+            for row in rows[:1]]
 
 
 def restrict(req, router_prompt=""):
@@ -65,11 +90,32 @@ def restrict(req, router_prompt=""):
     removed = [t.name for t in tools if blocked(t.name)]
     for name in removed:
         toolset.remove_tool(name)
+    for index, tool in enumerate(getattr(toolset, "tools", [])):
+        if tool.name == "shrink_orchestrate":
+            narrowed = copy.copy(tool)
+            narrowed.description = FRONT_DESCRIPTION
+            narrowed.parameters = {"type": "object", "properties": {
+                "action": {"type": "string", "enum": sorted(FRONT_ACTIONS)},
+                "arguments": {"type": "string", "description": "JSON对象"}},
+                "required": ["action", "arguments"]}
+            toolset.tools[index] = narrowed
     # The host appends this when handoffs are mounted; it tells the model to use tools it no
     # longer has.
     router_prompt = (router_prompt or "").strip()
     if router_prompt and router_prompt in (req.system_prompt or ""):
         req.system_prompt = req.system_prompt.replace(router_prompt, "")
+    # Remove only the host-generated skill section, not arbitrary persona headings.
+    req.system_prompt = re.sub(
+        r"## Skills\n\nYou have specialized skills — reusable instruction bundles stored "
+        r".*?7\. \*\*Failure handling\*\* — If a skill cannot be applied, state the "
+        r"issue clearly and continue with the best alternative\.\n",
+        "", req.system_prompt or "", flags=re.S)
+    try:
+        from astrbot.core.astr_main_agent import SANDBOX_MODE_PROMPT, _build_local_mode_prompt
+        for instruction in (SANDBOX_MODE_PROMPT, _build_local_mode_prompt()):
+            req.system_prompt = req.system_prompt.replace(instruction, "")
+    except ImportError:
+        pass
     return removed
 
 

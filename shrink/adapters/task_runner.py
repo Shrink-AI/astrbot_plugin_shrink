@@ -87,11 +87,46 @@ async def run_task_agent(context, *, event, chat_provider_id, prompt, system_pro
         kwargs = {"tool_result_overflow_dir": get_astrbot_system_tmp_path(),
                   "read_tool": tools.get_tool("astrbot_file_read_tool")}
     runner = task_runner(inputs, task_id)
+    if tools and tools.get_tool("shrink_orchestrate"):
+        from astrbot.core.agent.tool import ToolSet
+        allowed = {tool.name: tool for tool in tools.tools if tool.active}
+        runner.available_tools = [{"name": tool.name, "description": tool.description or "",
+                                   "parameters": tool.parameters} for tool in allowed.values()]
+        loaded = ToolSet([allowed["shrink_orchestrate"]])
+        # Restore only previously used tools, preserving persisted call/result contexts.
+        for message in saved or []:
+            for call in message.get("tool_calls", []):
+                name = call.get("function", {}).get("name")
+                if name in allowed and not loaded.get_tool(name):
+                    loaded.add_tool(allowed[name])
+        request.func_tool = loaded
+        def load_tool(name):
+            if name not in allowed:
+                raise ValueError("当前任务没有这个工具")
+            if not runner.req.func_tool.get_tool(name):
+                runner.req.func_tool.add_tool(allowed[name])
+            raw = getattr(runner, "_skill_like_raw_tool_set", None)
+            if raw is not None and not raw.get_tool(name):
+                raw.add_tool(allowed[name])
+        runner.load_tool = load_tool
+        guidance = ("\n工具按需加载：先shrink_orchestrate tools按query查短目录；"
+                    "再tools传name读取该工具参数并启用，下一轮即可直接调用。"
+                    "执行任务所需技能也通过已启用的技能/文件工具按需读取。")
+        if saved is None:
+            request.system_prompt += guidance
+        else:
+            request.contexts = [*request.contexts, {"role": "user", "content": guidance}]
     await runner.reset(provider=provider, request=request, run_context=wrapper,
                        tool_executor=FunctionToolExecutor(), agent_hooks=agent_hooks,
                        streaming=True, request_max_retries=1, **kwargs)
-    async for _ in runner.step_until_done(max_steps):
-        pass
+    runners = event.get_extra("shrink_task_runners") or {}
+    event.set_extra("shrink_task_runners", runners)
+    runners[task_id] = runner
+    try:
+        async for _ in runner.step_until_done(max_steps):
+            pass
+    finally:
+        runners.pop(task_id, None)
     response = runner.get_final_llm_resp()
     if response is None:
         raise RuntimeError("子代理未返回结果")

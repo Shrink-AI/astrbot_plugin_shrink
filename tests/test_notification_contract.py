@@ -99,11 +99,14 @@ async def test_cancel_is_durable_terminal_and_bound_to_scope_and_type(app, notic
     assert not sends
 
 
-async def test_fallback_preserves_necessary_content_only_after_expression_failure(app, notices):
+async def test_fallback_preserves_necessary_content_only_after_expression_failure(app, notices, caplog):
     _, _, sends = notices
     app.expression.model = AsyncMock(side_effect=TimeoutError())
     await call(app, facts={"content": "喝水"}, fallback_text="提醒你：该喝水了。")
-    await app.notification_outbox.pump()
+    with caplog.at_level("INFO"):
+        await app.notification_outbox.pump()
+    assert "error=TimeoutError" in caplog.text
+    assert "path=plugin_fallback" in caplog.text
     assert sends == [(SCOPE["session"], "提醒你：该喝水了。")]
     assert app.expression.model.await_count == 2
 

@@ -129,6 +129,36 @@ def tool_results(runner):
     return [str(m.content) for m in runner.run_context.messages if m.role == "tool"]
 
 
+def test_foreground_removes_host_execution_catalog_but_preserves_persona():
+    from astrbot.core.astr_main_agent import SANDBOX_MODE_PROMPT, _build_local_mode_prompt
+    from astrbot.core.skills.skill_manager import build_skills_prompt
+    request = ProviderRequest(system_prompt="PERSONA\n" + build_skills_prompt([]) +
+                              SANDBOX_MODE_PROMPT + _build_local_mode_prompt() + "\nMEMORY",
+                              func_tool=ToolSet([tool("shrink_orchestrate")]))
+    restrict(request)
+    assert request.system_prompt.strip() == "PERSONA\n\nMEMORY"
+    assert "tools" not in request.func_tool.get_tool("shrink_orchestrate").parameters["properties"]["action"]["enum"]
+
+
+def test_foreground_tool_clone_keeps_bound_host_handler_without_copying_host():
+    class Host:
+        def __deepcopy__(self, memo):
+            raise AssertionError("Host resources must not be copied")
+
+        async def orchestrate(self, **kwargs):
+            return "ok"
+    host = Host()
+    original = tool("shrink_orchestrate")
+    original.handler = host.orchestrate
+    original.parameters = {"original": True}
+    request = ProviderRequest(func_tool=ToolSet([original]))
+    restrict(request)
+    narrowed = request.func_tool.get_tool("shrink_orchestrate")
+    assert narrowed is not original
+    assert narrowed.handler.__self__ is host
+    assert original.parameters == {"original": True}
+
+
 async def test_withheld_tool_cannot_be_executed_even_when_the_model_names_it():
     """T06: filtering the request's tool set is what blocks execution, not a hook."""
     background = ToolSet([tool("astrbot_execute_shell")])

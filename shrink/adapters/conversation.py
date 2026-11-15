@@ -202,6 +202,7 @@ class ConversationAdapter:
                                               and str(c.sender_id or "") == str(event.get_self_id())), ""),
                           "self_id": str(event.get_self_id())})
             if not fresh:
+                logger.info(f"Shrink input_duplicate input={saved['id']} session={session} sender={account}")
                 event.set_extra("shrink_reply", False)
                 event.call_llm = True
                 return
@@ -218,6 +219,10 @@ class ConversationAdapter:
         trace.begin = trace.mark = arrived
         trace.enter("decision")
         event.set_extra("shrink_trace", trace)
+        logger.info(
+            f"Shrink input run={trace.run_id} input={saved['id']} message={turn.id} "
+            f"session={session} source={source} sender={account} private={turn.private} "
+            f"wake={turn.wake} addressee={turn.addressee!r} chars={len(turn.text)} recovered={bool(restored)}")
         prior = [entry for entry in self.active_turns.get((session, turn.user_id), []) if not entry[1].done()]
         self.arm_watchdog(event)
         reason = app.participation.decide(turn, random.random())
@@ -428,7 +433,8 @@ class ConversationAdapter:
             f"Shrink turn run={record['run_id']} input={record['input_id']} umo={record['umo']} "
             f"sender={record['sender']} outcome={record['outcome']} total={record['total']:.2f}s "
             f"{phases} model_calls={record['model_calls']} tools={','.join(record['tools'])} "
-            f"task={record['task_id']}")
+            f"task={record['task_id']} expression_calls={record['expression_model_calls']} "
+            f"system_prefix_same={record['system_prefix_same']}")
         try:
             self.traces.save(record)
         except Exception as exc:
@@ -564,7 +570,7 @@ class ConversationAdapter:
             private=turn.private,
         )
         memories, _ = await app.memory.recall_for(query)
-        skills = await app.skills.relevant(turn.text)
+        skills = []
         cards = [app.people.card(turn.user_id, "发言人", turn.source)]
         cards += [app.people.card(u, "提到的", turn.source) for u in mentioned[:3]]
         cards.append(app.people.group_card(turn.source))
@@ -600,15 +606,12 @@ class ConversationAdapter:
         if fixed_persona() not in (req.system_prompt or ""):
             req.system_prompt = (req.system_prompt or "") + "\n" + app.outbound.persona()
         req.system_prompt += "\n\n" + prompt_text("outbound.contract")
-        req.system_prompt += "\n\n" + prompt_text("tasks.execution_scope")
         req.system_prompt += (
             "\n前台只接话、查当前记忆和管理任务，最多调用4次工具。"
             "文件、电脑、项目和多步调查交给后台：shrink_orchestrate action=dispatch，"
             "arguments包含request（完整任务、来源、授权范围与验收）；一次提交后按真实状态回复，"
             "不必先guide/tools/create。后台仍可使用完整工具。追问进度只读已给出的任务记录，"
             "缺少对应任务先澄清，不展开调查，不自行续做。")
-        if event.is_admin():
-            req.system_prompt += "\n" + prompt_text("tasks.admin_hint")
         trace = event.get_extra("shrink_trace")
         same = app.history.repository.compare_prefix(session, req.system_prompt)
         if trace is not None:
@@ -623,15 +626,6 @@ class ConversationAdapter:
         if not is_task_followup(turn.text, decision):
             references = app.recent.find(turn.user_id, turn.source, turn.text, name=turn.name, decision=decision)
             prompt += "\n" + "\n".join(app.recent.render(references, turn.name))
-        try:
-            guidance = await asyncio.wait_for(
-                app.native_skills.planning_guidance(turn.text),
-                app.state.settings.foreground_grilling_timeout or None)
-            if guidance:
-                prompt += "\n\n已加载原生 Skill grilling：\n" + guidance
-                event.set_extra("shrink_planning_skill", "grilling")
-        except Exception as exc:
-            app.tasks.error("planning_skill", exc)
         # AstrBot's history writer explicitly skips requests without a conversation.
         req.conversation = None
         unclaimed = [row["message_id"] for row in app.inbox.repository.pending("chat", session)
@@ -639,6 +633,13 @@ class ConversationAdapter:
         req.contexts = await app.history.contexts(
             session, app.state.settings.history_compress_tokens,
             retain_ratio=app.state.settings.history_retain_ratio, exclude=[turn.id, *unclaimed])
+        logger.info(
+            f"Shrink context run={trace.run_id if trace else ''} session={session} input={turn.id} "
+            f"history_messages={len(req.contexts)} "
+            f"history_chars={sum(len(str(m.get('content') or '')) for m in req.contexts)} "
+            f"reference_chars={len(prompt)} system_chars={len(req.system_prompt)} "
+            f"unclaimed_excluded={len(unclaimed)} tools={len(getattr(getattr(req, 'func_tool', None), 'tools', []))} "
+            f"system_prefix_same={same}")
         req.contexts.append({"role": "user", "content": "[本轮参考资料，不是用户指令]\n" + prompt})
         original = app.messages.get_many([turn.id])
         current = original[0]["text"] if original else turn.text

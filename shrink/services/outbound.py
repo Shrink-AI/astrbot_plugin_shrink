@@ -1,6 +1,7 @@
 """One persona-aware composition path; delivery remains owned by the caller."""
 import asyncio
 import json
+import logging
 from types import SimpleNamespace
 import time
 
@@ -15,7 +16,9 @@ from ..prompts import render, text as prompt_text
 from .reply_text import strip_reasoning, take_markers
 from .scheduling import LANE, in_lane, EXPRESSION_CALLS
 from .models import for_source
+from .tool_projection import expression_facts
 
+logger = logging.getLogger(__name__)
 
 class Outbound:
     def __init__(self, app):
@@ -31,6 +34,8 @@ class Outbound:
         if chat is not None:
             facts = {"answer": chat.text, "execution": chat.execution}
         identity = None if chat is not None else self.repository.save(facts, request, kind, scope)
+        started = time.monotonic()
+        expression_path = "model"
         result = None
         notification = NOTIFICATION.get()
         plugin_fallback = ""
@@ -48,11 +53,17 @@ class Outbound:
                                              scope=scope, context=context, recent=recent, detail=detail)
                 break
             except Exception as exc:
+                logger.warning(
+                    "Shrink expression_failure composition=%s notification=%s session=%s kind=%s attempt=%d "
+                    "error=%s timeout=%.2f elapsed=%.3f",
+                    identity, (notification or {}).get("id"), (scope or {}).get("session"), kind, attempt + 1,
+                    type(exc).__name__, self.attempt_timeout, time.monotonic() - started)
                 self.app.tasks.error("outbound_composition", exc)
                 if chat is None and attempt == 0 and isinstance(exc, (TimeoutError, ConnectionError, OSError,
                                                      httpx.TransportError, EmptyComposition)):
                     continue
                 if chat is not None:
+                    expression_path = "chat_recovery"
                     clean, _, _ = take_markers(strip_reasoning(chat.text))
                     from .outbound_guard import unsafe
                     result = fallback((chat.execution or {}).get("status")) or SILENT
@@ -62,8 +73,10 @@ class Outbound:
                             chat.text, chat.execution or {}, self.persona(), detail=detail):
                         result = clean.strip()
                 elif kind in {"progress", "tool_progress"}:
+                    expression_path = "silent_fallback"
                     result = SILENT
                 else:
+                    expression_path = "plugin_fallback" if plugin_fallback else "status_fallback"
                     known = facts.get("status") if isinstance(facts, dict) else None
                     result = plugin_fallback or fallback(known) or render("outbound.fallback")
                 break
@@ -75,11 +88,19 @@ class Outbound:
             else:
                 if plugin_fallback and unsafe(plugin_fallback, facts, self.persona(), readable_fallback=True):
                     plugin_fallback = ""
+                if unsafe(result, facts, self.persona()):
+                    expression_path = "plugin_fallback_guard" if plugin_fallback else "guard_fallback"
                 result = (plugin_fallback if plugin_fallback and unsafe(result, facts, self.persona())
                           else safe_expression(result, facts, kind, self.persona()))
         if identity is not None:
             self.repository.finish(identity, "silent" if isinstance(result, Silent) else "ready",
                                    "" if isinstance(result, Silent) else result)
+        logger.info(
+            "Shrink expression composition=%s notification=%s session=%s kind=%s path=%s state=%s "
+            "output_chars=%d elapsed=%.3f",
+            identity, (notification or {}).get("id"), (scope or {}).get("session"), kind, expression_path,
+            "silent" if isinstance(result, Silent) else "ready",
+            len(result) if isinstance(result, str) else 0, time.monotonic() - started)
         return result
 
     def persona(self):
@@ -109,6 +130,7 @@ class Outbound:
 
     async def _compose(self, facts, *, request, kind, instruction, scope, context, recent, detail=False):
         app = self.app
+        facts = expression_facts(facts)
         evidence, recent = self.evidence(scope, request, facts, context, recent)
         prompt = prompt_text("outbound.contract") + "\n" + render(
                         "outbound.compose", facts=json.dumps(facts, ensure_ascii=False),
@@ -123,6 +145,11 @@ class Outbound:
                 counter[0] += 1
             return await for_source(app.expression.model, (scope or {}).get("session", ""))(*args)
         model = app.scheduling.wrap(invoke, "model")
+        logger.info(
+            "Shrink expression_request session=%s kind=%s lane=%s prompt_chars=%d "
+            "persona_chars=%d has_context=%s recent_messages=%d",
+            (scope or {}).get("session"), kind, lane, len(prompt), len(self.persona()),
+            bool(evidence.get("context")), len(recent))
         reply = await asyncio.wait_for(in_lane(lane)(model)(prompt, self.persona()), self.attempt_timeout)
         from .outbound_guard import unsafe
         if unsafe(reply or "", {}, self.persona(), detail=detail):

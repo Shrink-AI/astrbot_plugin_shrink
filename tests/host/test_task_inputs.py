@@ -217,3 +217,49 @@ async def test_native_steps_checkpoint_once_without_new_input(runtime, monkeypat
     await drive(await build(op, model))
     assert len(model.seen) == 4
     assert save.await_count == 5  # Initial context, then one checkpoint per completed step.
+
+
+async def test_same_persona_worker_loads_one_tool_after_discovery(runtime, monkeypatch):
+    from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
+    from astrbot.core.star.context import Context
+    from astrbot.core.platform.astr_message_event import AstrMessageEvent
+    from mcp.types import CallToolResult, TextContent
+    from tests.test_agent_tasks import Event
+    op, _, _ = runtime
+    await create(op)
+    class HostEvent(Event, AstrMessageEvent):
+        pass
+    event = HostEvent()
+    context = object.__new__(Context)
+    context.__dict__.update(op.context.__dict__)
+    op.context = context
+    op.context.subagent_orchestrator.handoffs[0].agent.begin_dialogs = []
+    offered = []
+    class DiscoveringModel(RecordingModel):
+        async def text_chat(self, **payload):
+            offered.append(list(payload["func_tool"].names()))
+            response = await super().text_chat(**payload)
+            if response.tools_call_name == ["shrink_orchestrate"]:
+                response.tools_call_args = [{"action": "tools", "arguments": {"name": "work"}}]
+            return response
+    model = DiscoveringModel(("shrink_orchestrate",), ("work",), "finished")
+    op.context.provider_manager = SimpleNamespace(get_provider_by_id=AsyncMock(return_value=model))
+    original = ToolSet([tool("shrink_orchestrate"), tool("work"), tool("unrelated")])
+    original.get_tool("shrink_orchestrate").parameters = {"type": "object", "properties": {
+        "action": {"type": "string"}, "arguments": {"type": "object"}}}
+    monkeypatch.setattr(FunctionToolExecutor, "_build_handoff_toolset", lambda *args: original)
+    async def execute(tool, run_context, **kwargs):
+        if tool.name == "shrink_orchestrate":
+            value = await op.orchestrate(event, kwargs["action"], kwargs["arguments"])
+            yield CallToolResult(content=[TextContent(type="text", text=json.dumps(value))])
+        else:
+            async for result in Tools.execute(tool, run_context, **kwargs):
+                yield result
+    monkeypatch.setattr(FunctionToolExecutor, "execute", staticmethod(execute))
+    result = await op.submit_agent(event, "researcher", "original")
+    await asyncio.wait_for(op.running[result["task_id"]], 15)
+    assert op.detail(result["task_id"])["status"] == "completed"
+    assert offered[0] == ["shrink_orchestrate"]
+    assert offered[1] == ["shrink_orchestrate", "work"]
+    assert Tools.ran == ["work"] and "unrelated" in original.names()
+    assert event.get_extra("shrink_task_runners") == {}

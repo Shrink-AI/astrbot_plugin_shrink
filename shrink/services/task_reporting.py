@@ -1,5 +1,6 @@
 """Facts used by foreground correction and durable background reporting."""
 import json
+from .tool_projection import receipt, brief
 
 
 def execution_report(task):
@@ -8,9 +9,13 @@ def execution_report(task):
     for event in task.get('events', []):
         if event.get('action', '').startswith(('tool:', 'tool_end:')) or event.get('action') in {
                 'write', 'check', 'test', 'deploy', 'rollback'}:
-            records.append({k: event.get(k, '') for k in ('action', 'plugin', 'path', 'result')})
+            records.append({"action": event["action"], "record_ref": f"task-event:{event.get('id', '')}",
+                            "result": json.dumps(receipt(event.get("result", ""),
+                                f"task-event:{event.get('id', '')}", 240), ensure_ascii=False)})
     return {'task_id': task['id'], 'status': task['status'],
-            'tool_records': records, 'result_summary_unverified': task.get('result', '')}
+            'tool_records': records[-4:], 'tool_record_count': len(records),
+            'result_ref': "task:" + task["id"],
+            'result_summary_unverified': brief(task.get('result', ''), 2500)}
 
 
 def delivery_owner(task, candidates):

@@ -189,8 +189,9 @@ export function SettingsPage() {
             {flag('cooperative_stop', '新消息或“停”让还没动手的旧回复立刻收手（试验）')}
           </FieldGroup>
         </Section>
-        <Section title="决策" desc="每次仅调用所选后端；超时仍允许私聊和明确呼叫进入主人格。Laya 接口尚未核实。">
+        <Section title="决策" desc="关闭后不调用独立判断模型，通过参与规则的消息交给主 LLM 结合会话判断；黑名单、群聊插话频率和权限检查仍生效。开启时仅调用所选后端；Laya 接口尚未核实。">
           <FieldGroup className="flex flex-col gap-5">
+            {flag('decision_enabled', '启用独立判断模型')}
             <Field orientation="horizontal">
               <FieldLabel htmlFor="decision-backend">决策后端</FieldLabel>
               <Select value={settings.decision_backend} onValueChange={value => set('decision_backend', value as 'haiku' | 'laya')}>

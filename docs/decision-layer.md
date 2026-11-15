@@ -26,7 +26,11 @@
 
 分类说明明确各字段取 candidates 中的 id／name 原值、evidence 必含 event.id；无任务／话题关联填 null，无能力填 []，无候选的 evidence 仍须包含当前输入。说明不提供可被照抄的示例 ID。旧代码取证未出现代码围栏，但首次修复后真实探测有 2/32 次输出带 json 围栏，因此增加唯一 JSON 对象提取；多对象、损坏的对象、错误结构仍拒绝，提取后沿用全部身份与权限复核。
 
-只选一个后端：默认 `decision_backend=haiku`、`decision_provider=shrink/claude-haiku-5-5`。`adapters/decision_backends.py` 调用宿主 provider，默认时限 `decision_timeout=3` 秒，可配置 0.01–10 秒；决策计入 turn_traces 的独立 `decision` 阶段。没有额外的决策自动重试循环，也不会故障后再串行调用另一个分类器。
+`decision_enabled` 默认开启，后台“决策”页可关闭。关闭后不调用独立判断模型，也不另发一次主模型分类请求；通过原参与规则的消息直接进入主对话，由主 LLM 结合历史判断意图、回复和派工。记录标为 `main_llm / decision_disabled`，不记作模型故障。黑名单、指向他人的对话、插话预算、重复输入、停止权限和已有任务绑定继续由规则处理。非必要后台进展直接静默，必要结果照常进入主人格表达。设置变更不会中断已经开始的模型调用。
+
+开启时只选一个后端：默认 `decision_backend=haiku`、`decision_provider=shrink/claude-haiku-5-5`。`adapters/decision_backends.py` 调用宿主 provider，默认时限 `decision_timeout=3` 秒，可配置 0.01–10 秒；决策计入 turn_traces 的独立 `decision` 阶段。没有额外的决策自动重试循环，也不会故障后再串行调用另一个分类器。
+
+排查未回复时按日志中的 `input`、`session` 和 `run` 关联 `Shrink input`、`decision`、`history`、`context`、`turn`：分别记录接收身份、参与及静默原因、历史数量与压缩检查点、实际请求体积和最终结局。`system_prefix_same` 只表示系统提示相同，不代表上游缓存命中。后台表达日志 `expression_request`、`expression_failure`、`expression` 记录原会话、材料体积、异常类别、尝试次数及 `plugin_fallback` 等最终路径；`ready` 仅表示表达完成，发送结果仍以通知回执为准。新增日志不打印聊天正文、模型完整请求或凭据。
 
 超时、格式不符或调用失败：私聊／明确叫到石英继续主人格，普通群聊保守静默；后者保留未处理收件箱输入，重启恢复仍使用同一标识。已经实际回复的输入按原有处理位置完成，不重复回复。停止目标不明时只询问目标，本轮移除执行工具；明确撤销授权仍绕过防抖，沿用现有停止入口，此处没有新增持续授权策略。
 

@@ -47,7 +47,11 @@ def test_task_statuses_are_scoped_to_owner_and_group():
     assert [r["task_id"] for r in task_statuses(
         operations, event, SimpleNamespace(private=False))] == ["own"]
     assert [r["task_id"] for r in task_statuses(
-        operations, event, SimpleNamespace(private=True))] == ["own", "elsewhere"]
+        operations, event, SimpleNamespace(private=True))] == []
+    event.set_extra("shrink_decision", {"decision": {"task": "elsewhere"}})
+    assert [r["task_id"] for r in task_statuses(
+        operations, event, SimpleNamespace(private=True))] == ["elsewhere"]
+    assert task_statuses(operations, event, SimpleNamespace(private=False)) == []
 
 
 @pytest.fixture

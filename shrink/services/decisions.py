@@ -1,6 +1,7 @@
 """Rules own identity and authority; a replaceable classifier only selects known references."""
 import asyncio
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from ..text_rules import grams
 from .recent import ASKED, PRIVATE, is_private
 from .turn_control import is_stop_request, is_revocation, is_task_followup
 
+logger = logging.getLogger(__name__)
 
 class Decision(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -202,6 +204,8 @@ class Decisions:
         if context.participation == "quiet" and not (context.direct or context.private):
             return decision, "participation_budget"
         if re.fullmatch(r"\s*(?:你好|您好|在吗|谢谢|好的|收到|hi|hello)[？?！!。，, ]*", text, re.I):
+            if not self.state.settings.decision_enabled and context.participation in {"engaged", "spontaneous"}:
+                return None, ""
             return decision, "simple_chat"
         return None, ""
 
@@ -219,7 +223,12 @@ class Decisions:
         direct = decision is not None
         fallback = False
         backend_name, version, confidence_kind = "rules", "1", "rule"
-        if not direct:
+        if not direct and not self.state.settings.decision_enabled:
+            decision = self.base(event, context, candidates)
+            decision.route, decision.notify = "reply", "normal"
+            backend_name, version, confidence_kind = "main_llm", "deferred", "unscored"
+            reason = "decision_disabled"
+        elif not direct:
             backend_name = self.state.settings.decision_backend
             backend = self.backends.get(backend_name)
             version = getattr(backend, "version", "unavailable")
@@ -239,6 +248,10 @@ class Decisions:
                 reason = "validated"
             except Exception as exc:
                 fallback, reason = True, "timeout" if isinstance(exc, TimeoutError) else "invalid_or_unavailable"
+                logger.warning(
+                    "Shrink decision_failure input=%s session=%s backend=%s error=%s timeout=%.2f",
+                    identity, event["session"], backend_name, type(exc).__name__,
+                    self.state.settings.decision_timeout)
                 decision = self.base(event, context, candidates)
                 if is_task_followup(event["text"]):
                     decision.intent = "supplement"
@@ -249,6 +262,14 @@ class Decisions:
                   "confidence_kind": confidence_kind, "fallback": fallback, "reason": reason,
                   "rule_direct": direct, "elapsed": time.monotonic() - started}
         result["id"] = self.repository.save(identity, candidates, result)
+        logger.info(
+            "Shrink decision input=%s session=%s sender=%s enabled=%s participation=%s "
+            "private=%s direct=%s backend=%s route=%s reason=%s fallback=%s task=%s "
+            "topics=%d tasks=%d elapsed=%.3f",
+            identity, event["session"], event["sender"], self.state.settings.decision_enabled,
+            context.participation, context.private, context.direct, backend_name,
+            decision.route, reason, fallback, decision.task,
+            len(candidates["topics"]), len(candidates["tasks"]), result["elapsed"])
         return result
 
     def append_target(self, identity, task_id, session, sender):
@@ -283,6 +304,10 @@ class Decisions:
 
 def guidance(result):
     value = result["decision"]
+    if result["reason"] == "decision_disabled":
+        return ("本轮未调用独立判断模型。请结合当前会话历史和用户原话，自行判断意图、"
+                "是否需要回应及是否需要派工；群聊是否可不回复仍按本轮要求。"
+                "补充任务时先核对原会话、创建者和目标，不猜测关联，不扩大授权；长执行交后台。")
     if result["reason"] in {"stop_ambiguous", "stop_permission"}:
         return "只询问要停止的具体目标；本轮不调用任何执行工具，也不要宣称已停止。"
     action = {"attach_task": "补充要求追加到原任务，使用 shrink_orchestrate append_input，不新建任务。",

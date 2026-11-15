@@ -21,6 +21,7 @@ class Settings(BaseModel):
     learning_provider: str = ""
     summary_provider: str = ""
     embedding_provider: str = ""
+    decision_enabled: bool = True
     decision_backend: Literal["haiku", "laya"] = "haiku"
     decision_provider: str = "shrink/claude-haiku-5-5"
     decision_timeout: float = Field(3, ge=0.01, le=10)
