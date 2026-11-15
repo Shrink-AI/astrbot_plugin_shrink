@@ -15,6 +15,7 @@ from ..prompts import tag
 from ..prompts import text as prompt_text
 from ..text_rules import INJECTION, INSULT
 from .model_output import ask_json
+from .models import for_source
 from .persona import PersonaService
 
 MAX_EXPRESSIONS = 10
@@ -98,7 +99,7 @@ class LearningService:
                 "sync": "not_attempted",
                 "evidence": [],
                 "sample_ids": [m["id"] for m in batch],
-                "provider": cfg.model_provider,
+                "provider": cfg.learning_provider or cfg.model_provider,
                 "prompt": tag(LEARNING),
             }
             run_id = self.repository.start(batch, detail)
@@ -111,7 +112,8 @@ class LearningService:
                 )
                 try:
                     result = await ask_json(
-                        self.model, learning_prompt(detail["original_style"], samples),
+                        for_source(self.model, batch[0]["source"]),
+                        learning_prompt(detail["original_style"], samples),
                         prompt_text(LEARNING), timeout=90,
                     )
                 except ValueError:

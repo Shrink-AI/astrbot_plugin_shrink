@@ -65,7 +65,7 @@ def redact(value):
     if isinstance(value, dict):
         return {k: ("[已隐藏]" if any(term in k.lower() for term in
                 ("password", "secret", "token", "api_key", "authorization", "cookie"))
-                or k.lower() in {"key", "env", "headers"} else redact(v))
+                or k.lower() in {"key", "env", "headers", "custom_headers"} else redact(v))
                 for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
@@ -75,6 +75,23 @@ def redact(value):
 class NativeManagement:
     def __init__(self, context, app=None):
         self.context, self.app = context, app
+
+    async def save_model_profile(self, profile, config):
+        """Use the host save path so its cached conversation pipeline is rebuilt too."""
+        import jwt
+
+        dashboard = self.context.get_config()["dashboard"]
+        token = jwt.encode({"username": dashboard["username"], "exp": time.time() + 60},
+                           dashboard["jwt_secret"], algorithm="HS256")
+        async with httpx.AsyncClient(timeout=45, trust_env=False) as client:
+            response = await client.post(
+                f"http://127.0.0.1:{dashboard.get('port', 6185)}/api/config/astrbot/update",
+                headers={"Authorization": "Bearer " + token},
+                json={"conf_id": profile, "config": config},
+            )
+            response.raise_for_status()
+            if response.json().get("status") != "ok":
+                raise ValueError("AstrBot 模型设置保存失败，请检查宿主后台")
 
     async def call(self, resource, action, arguments=None, confirmed=False):
         if resource == "catalog":
@@ -87,16 +104,22 @@ class NativeManagement:
         args = arguments or {}
         if not isinstance(args, dict):
             raise ValueError("操作参数必须是JSON对象")
+        if resource == "subagents" and action == "update":
+            # Agent edits must not change the host's synchronous handoff switch.
+            current = self.context.get_config().get("subagent_orchestrator", {}).get("main_enable", False)
+            args = {**args, "main_enable": current}
         if resource == "models" and action == "list":
             args = {"provider_type": "chat_completion,embedding,rerank,stt,tts", **args}
         if resource == "mcp" and action in {"update", "test"} and "config" in args:
             old = self.context.get_llm_tool_manager().load_mcp_config().get("mcpServers", {}).get(
                 args.get("oldName") or args.get("name"), {})
             args = {**args, "config": preserve_secrets(args["config"], old)}
-        if resource == "models" and action == "update":
+        if resource == "models" and action in {"create", "update"}:
+            config = args.get("config", {}) if action == "update" else args
             old = next((p for p in self.context.get_config().get("provider", [])
-                        if p.get("id") == args.get("id")), {})
-            args = {**args, "config": preserve_secrets(args.get("config", {}), old)}
+                        if action == "update" and p.get("id") == args.get("id")), {})
+            config = self.model_config(config, old)
+            args = {**args, "config": config} if action == "update" else config
         if resource == "knowledge" and self.app:
             links = self.app.database.rows("SELECT * FROM knowledge_links WHERE kb_id=?",
                                           (args.get("kb_id", ""),))
@@ -151,6 +174,21 @@ class NativeManagement:
             if result.get("status") != "ok":
                 raise ValueError(str(redact(result))[:2000])
             data = result.get("data")
+            if resource == "models" and action == "list":
+                own = {p["id"]: p for p in self.context.get_config().get("provider", [])}
+                sources = {p["id"]: p for p in self.context.get_config().get("provider_sources", [])}
+                data = [{
+                    **redact(own.get(p["id"], {})),
+                    "config": redact(own.get(p["id"], {})),
+                    "provider_type": p.get("provider_type", "chat_completion"),
+                    "effective_type": p.get("type", ""),
+                    "source_type": sources.get(p.get("provider_source_id"), {}).get("type", ""),
+                } for p in data]
+            if resource == "models" and action == "schema":
+                data = {**data, "sources": [{
+                    "id": source["id"], "type": source.get("type", ""),
+                    "provider_type": source.get("provider_type", "chat_completion"),
+                } for source in self.context.get_config().get("provider_sources", [])]}
             if self.app and resource == "skills" and action == "create":
                 from ..services.task_context import CURRENT_TASK
                 if CURRENT_TASK.get():
@@ -163,6 +201,21 @@ class NativeManagement:
                     if skill["name"] in labels:
                         skill["display_name"] = labels[skill["name"]]
             return redact(data)
+
+    def model_config(self, config, previous):
+        if not isinstance(config, dict):
+            raise ValueError("模型配置必须是 JSON 对象")
+        source = next((p for p in self.context.get_config().get("provider_sources", [])
+                       if p.get("id") == config.get("provider_source_id")), {})
+        if config.get("provider_source_id") and not source:
+            raise ValueError("模型来源不存在，请在 AstrBot 后台检查来源")
+        metadata = {"config", "effective_type", "source_type", "existing"}
+        # The host's list API merges source fields. Never materialize those inherited
+        # credentials or connection settings in a model when saving an older client.
+        model_fields = {"id", "model", "enable", "provider_source_id", "type"}
+        own = {k: v for k, v in config.items()
+               if k not in metadata and (k not in source or k in previous or k in model_fields)}
+        return preserve_secrets(own, previous)
 
 
 def preserve_secrets(value, previous):

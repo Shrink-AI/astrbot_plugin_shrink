@@ -5,12 +5,21 @@ from pydantic import BaseModel, ConfigDict, Field
 from .prompts.chat import fixed_persona, persona_prompt  # noqa: F401  (public re-export)
 
 BOT_NAME = "石英"
+HOST_MODEL_FIELDS = frozenset({
+    "model_provider", "fallback_providers", "compression_provider", "image_caption_provider",
+})
+HOST_MODELS_MIGRATION = "host_model_settings_v1"
 
 
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model_provider: str = ""
+    fallback_providers: list[str] = []
+    compression_provider: str = ""
+    image_caption_provider: str = ""
+    learning_provider: str = ""
+    summary_provider: str = ""
     embedding_provider: str = ""
     decision_backend: Literal["haiku", "laya"] = "haiku"
     decision_provider: str = "shrink/claude-haiku-5-5"

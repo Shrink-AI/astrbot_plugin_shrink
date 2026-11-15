@@ -25,11 +25,16 @@ class PluginHost:
         self.bridge = AstrBotProviders(context, lambda: self.application.state)
         self.application = Application(
             root,
-            self.bridge.model,
+            self.bridge.for_purpose("chat"),
             self.bridge.embed,
             self.bridge.sync_persona,
             self.bridge.search,
+            learning_model=self.bridge.for_purpose("learning"),
+            summary_model=self.bridge.for_purpose("summary"),
+            compression_model=self.bridge.for_purpose("compression"),
         )
+        self.application.model_settings = self.bridge.bind_settings()
+        self.bridge.session_for_source = self.application.history.repository.session_for_source
         def host_quotes(umo):
             try:
                 settings = context.get_config(umo=umo or None)["platform_settings"]
@@ -57,6 +62,7 @@ class PluginHost:
         self.static_dir = static_dir
         self.operations = Operations(context, self.application, static_dir.parent)
         self.native = NativeManagement(context, self.application)
+        self.application.model_settings.persist = self.native.save_model_profile
         self.application.operations = self.operations
         self.application.native = self.native
         self.native_skills = NativeSkills(self.application, self.native)

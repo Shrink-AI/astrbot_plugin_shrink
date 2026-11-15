@@ -3,7 +3,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from ..config import Settings
+from ..config import HOST_MODEL_FIELDS, HOST_MODELS_MIGRATION, Settings
 from .schema import migrate_schema
 
 
@@ -47,10 +47,11 @@ class StateRepository:
     def __init__(self, database: Database):
         self.database = database
         self.root = database.root
+        self.settings_overlay = None
         stored = self.get("settings")
         if stored is None:
             self.put("settings", Settings().model_dump())
-        elif set(Settings.model_fields) - set(stored):
+        elif (set(Settings.model_fields) - self.external_settings) - set(stored):
             # Write defaults for settings added in newer versions so the stored copy is complete.
             self.put("settings", Settings(**stored).model_dump())
         # Administrator-requested, one-time migration. Preserve all existing groups
@@ -70,6 +71,8 @@ class StateRepository:
         return json.loads(rows[0]["value"]) if rows else default
 
     def put(self, key, value):
+        if key == "settings":
+            value = {k: v for k, v in value.items() if k not in self.external_settings}
         with self.database.transaction() as connection:
             connection.execute(
                 "INSERT OR REPLACE INTO kv VALUES (?,?)",
@@ -78,4 +81,9 @@ class StateRepository:
 
     @property
     def settings(self):
-        return Settings(**self.get("settings"))
+        overlay = self.settings_overlay() if self.settings_overlay else {}
+        return Settings(**{**self.get("settings"), **overlay})
+
+    @property
+    def external_settings(self):
+        return HOST_MODEL_FIELDS if self.get(HOST_MODELS_MIGRATION) else frozenset()

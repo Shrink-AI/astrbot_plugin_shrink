@@ -1,5 +1,10 @@
 export interface Settings {
   model_provider: string;
+  fallback_providers: string[];
+  compression_provider: string;
+  image_caption_provider: string;
+  learning_provider: string;
+  summary_provider: string;
   embedding_provider: string;
   decision_backend: 'haiku' | 'laya';
   decision_provider: string;
@@ -10,6 +15,7 @@ export interface Settings {
   persona_id: string;
   spontaneous_probability: number;
   spontaneous_limit: number;
+  group_blacklist: string[];
   learning_enabled: boolean;
   learning_hours: number;
   learning_min_messages: number;
@@ -40,6 +46,7 @@ export interface Settings {
   cooperative_stop: boolean;
   engaged_seconds: number;
   skills_enabled: boolean;
+  task_retry_limit: number;
   sandbox_url: string;
 }
 export interface DecisionRecord {
@@ -56,7 +63,13 @@ export interface DecisionRecords {
   stats: { total: number; direct: number; rule_direct_ratio: number };
 }
 export interface Providers { chat: string[]; embedding: string[] }
-export interface Configuration { settings: Settings; providers: Providers }
+export interface Configuration {
+  settings: Settings;
+  providers: Providers;
+  model_profiles?: { id: string; name: string; editable: boolean }[];
+  model_profile?: string;
+  model_status?: Record<string, { status: string; using: string; selected: string; at: number }>;
+}
 
 export interface PersonaVersion { id: number; text: string; reason: string; evidence: string; created: number }
 export interface Persona { fixed: string; learned: string; active: number; versions: PersonaVersion[] }
@@ -195,6 +208,7 @@ export type TaskAttempt = {
   error_class: string; retry_ordinal: number; step: number;
 };
 export type OperationTask = {
+  kind: 'development' | 'agent'; parent: string;
   id: string; request: string; session: string; sender: string; status: TaskStatus;
   started: number; finished: number | null; result: string; failures: number; provider: string;
   delivery: string; next_run: number | null; retry_count: number; attempts?: TaskAttempt[];

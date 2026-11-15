@@ -21,8 +21,10 @@ class AgentTasks:
     def init_agents(self):
         self.agent_config_lock = asyncio.Lock()
         self.clarifications = Clarifications(self.database)
-        settings = getattr(self.app.state, "settings", None)
-        self.task_states = TaskStates(Tasks(self.database), getattr(settings, "task_retry_limit", 3))
+        self.task_states = TaskStates(
+            Tasks(self.database),
+            retry_limit_provider=lambda: getattr(getattr(self.app.state, "settings", None), "task_retry_limit", 3),
+        )
         self.task_inputs = TaskInputs(TaskInputsRepository(self.database), self.task_states)
         self.question_signals = {}
 

@@ -43,6 +43,8 @@ export function PersonaPage() {
   if(!persona) return <Empty text="加载中…" />;
   return <>
     <PageHead title="人格">
+      <Button variant="outline" disabled={busy || status.learning_running}
+        onClick={() => void action(() => api('/learning', 'POST'), '已开始学习，完成后在下方查看')}>立即学习</Button>
       <Button disabled={busy || status.learning_running} onClick={() => void action(() => api('/learning/preview', 'POST'), '已开始预演，完成后在下方查看')}>
         {status.learning_running ? '学习中…' : '预演学习'}</Button>
     </PageHead>

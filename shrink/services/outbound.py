@@ -14,6 +14,7 @@ from ..config import persona_prompt
 from ..prompts import render, text as prompt_text
 from .reply_text import strip_reasoning, take_markers
 from .scheduling import LANE, in_lane, EXPRESSION_CALLS
+from .models import for_source
 
 
 class Outbound:
@@ -120,7 +121,7 @@ class Outbound:
             counter = EXPRESSION_CALLS.get()
             if counter is not None:
                 counter[0] += 1
-            return await app.expression.model(*args)
+            return await for_source(app.expression.model, (scope or {}).get("session", ""))(*args)
         model = app.scheduling.wrap(invoke, "model")
         reply = await asyncio.wait_for(in_lane(lane)(model)(prompt, self.persona()), self.attempt_timeout)
         from .outbound_guard import unsafe

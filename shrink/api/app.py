@@ -34,6 +34,7 @@ def create_app(
         system.router_for(
             application.state, application.status, application.learning, providers,
             application.digest, application.consolidation, application.teach,
+            getattr(application, "model_settings", None),
         )
     )
     app.include_router(

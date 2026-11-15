@@ -29,7 +29,7 @@ const statusTone = (status: string): 'ok' | 'warn' | 'bad' | 'info' | undefined 
         : status ? 'warn' : undefined;
 
 export function OperationsPage() {
-  const { action, revision, setError } = useDashboard();
+  const { action, revision, setError, busy } = useDashboard();
   const ask = useConfirm();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [selected, setSelected] = useState<Task | null>(null);
@@ -127,6 +127,16 @@ export function OperationsPage() {
           <pre className="max-h-80 overflow-auto rounded-lg border bg-muted/40 p-2.5 font-mono text-xs whitespace-pre-wrap break-words">{selected.result || '尚无最终结果'}</pre>
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => void inspect(selected.id)}>刷新详情</Button>
+            {selected.kind === 'agent' && !selected.parent
+              && ['completed', 'needs_attention', 'failed', 'waiting_user'].includes(selected.status)
+              && !['platform_accepted', 'sending', 'unknown', 'silent', 'delegated'].includes(selected.delivery)
+              && <Button variant="outline" size="sm" disabled={busy} onClick={async () => {
+                if (!await ask({ title: '补发结果？', desc: '石英会在原会话里再发送一次这项任务的结果。' })) return;
+                void action(async () => {
+                  await api(`/operations/tasks/${selected.id}/redeliver`, 'POST');
+                  await inspect(selected.id);
+                }, '已处理补发请求');
+              }}>补发结果</Button>}
           </div>
           <div className="flex flex-col gap-2">
             {selected.events?.map(e => <Collapsible key={e.id} className="group/collapsible text-sm">

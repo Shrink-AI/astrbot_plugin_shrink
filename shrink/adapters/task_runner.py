@@ -66,7 +66,7 @@ async def run_task_agent(context, *, event, chat_provider_id, prompt, system_pro
     provider = await context.provider_manager.get_provider_by_id(chat_provider_id)
     if provider is None:
         raise ValueError("任务模型不可用")
-    from .task_provider import task_provider
+    from .task_provider import resume_contexts, task_provider
     provider = task_provider(provider)
     # Keep the native Context.tool_loop_agent local-execution policy and overflow behavior.
     if (tools and any(tools.get_tool(name) and tools.get_tool(name).active for name in
@@ -76,6 +76,8 @@ async def run_task_agent(context, *, event, chat_provider_id, prompt, system_pro
         if policy.allow_execution and not policy.allow_network:
             system_prompt += "\n" + LOCAL_NETWORK_POLICY_NOTICE
     saved = inputs.repository.context(task_id)
+    if saved is not None:
+        saved = resume_contexts(saved, provider)
     request = ProviderRequest(
         prompt=None if saved is not None else prompt,
         system_prompt="" if saved is not None else system_prompt,

@@ -9,6 +9,7 @@ from ..prompts.knowledge import GROUP, PROFILE, group_prompt, profile_prompt
 from ..prompts import text as prompt_text
 from ..text_rules import INSULT
 from .model_output import ask_json
+from .models import for_source
 
 NIGHT_HOUR = 4
 
@@ -63,7 +64,7 @@ class ConsolidationService:
             return False
         name = source.rsplit(":", 1)[-1]
         text = "\n".join(f"- {_date(r['start'])}：{r['summary'][:200]}" for r in rows)
-        answer = await ask_json(self.model, group_prompt(name, text), prompt_text(GROUP), timeout=60)
+        answer = await ask_json(for_source(self.model, source), group_prompt(name, text), prompt_text(GROUP), timeout=60)
         summary = str(answer.get("summary") or "").strip()[:220] if isinstance(answer, dict) else ""
         if not summary:
             return False

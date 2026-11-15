@@ -1,8 +1,32 @@
 """One native provider request per durable background attempt."""
 import copy
+import json
 from types import MethodType
 
 from ..services.task_errors import TaskFailure
+
+
+def resume_contexts(contexts, provider):
+    if getattr(provider, "provider_config", {}).get("type") != "anthropic_chat_completion":
+        return contexts
+    restored = copy.deepcopy(contexts)
+    for message in restored:
+        if not isinstance(message.get("content"), list):
+            continue
+        compatible = []
+        for part in message["content"]:
+            if part.get("type") == "think" and isinstance(part.get("encrypted"), str):
+                try:
+                    state = json.loads(part["encrypted"])
+                except ValueError:
+                    state = None
+                # This is serialized Responses replay data, not an Anthropic signature.
+                if isinstance(state, dict) and state.get("type") == "openai_responses_reasoning":
+                    continue
+            compatible.append(part)
+        message["content"] = compatible
+    return [message for message in restored
+            if message.get("content") != [] or message.get("tool_calls")]
 
 
 def task_provider(provider):

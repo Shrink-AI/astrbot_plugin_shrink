@@ -16,11 +16,18 @@ import { useDashboard } from '@/shared/dashboard';
 import { aliases, date, memoryKinds, memoryStatus, origins, place, shortDate } from '@/shared/format';
 
 function NicknameChip({ n, remove }: { n: Nickname; remove: () => Promise<void> }) {
+  const { action, busy } = useDashboard();
   const title = `${origins[n.origin] ?? n.origin} · ${n.scope ? place(n.scope) : '所有群'}${n.verified === 1 ? ' · 已确认' : ''}`;
   return <span className={cn('chip inline-flex items-center gap-0.5', n.status !== 'active' && n.status)} title={title}>
     <UiBadge variant="outline" className="gap-1">
       {n.name}{n.status === 'candidate' && <span className="text-xs text-muted-foreground">待确认</span>}
     </UiBadge>
+    {n.status === 'candidate' && <>
+      <Button variant="ghost" size="sm" disabled={busy}
+        onClick={() => void action(() => api(`/nicknames/${n.id}/verify`, 'POST', { correct: true }), '已确认称呼')}>确认</Button>
+      <Button variant="ghost" size="sm" disabled={busy}
+        onClick={() => void action(() => api(`/nicknames/${n.id}/verify`, 'POST', { correct: false }), '已否定称呼')}>不对</Button>
+    </>}
     <Button variant="ghost" size="icon-xs" aria-label={`删除称呼 ${n.name}`} onClick={() => void remove()}><X /></Button>
   </span>;
 }

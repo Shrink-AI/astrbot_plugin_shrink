@@ -86,4 +86,7 @@ class Scheduling:
             slot = self.resources.setdefault((resource, lane), asyncio.Semaphore(CAPACITY[lane]))
             async with slot:
                 return await function(*args, **kwargs)
+        bind = getattr(function, "__dict__", {}).get("for_source")
+        if bind:
+            call.for_source = lambda source: self.wrap(bind(source), resource)
         return call

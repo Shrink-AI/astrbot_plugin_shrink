@@ -51,6 +51,10 @@ class Application:
         embed: Embedder,
         sync_persona: PersonaSync,
         search: Searcher | None = None,
+        *,
+        learning_model: ChatModel | None = None,
+        summary_model: ChatModel | None = None,
+        compression_model: ChatModel | None = None,
     ):
         from .services.upgrades import startup_upgrade
         fresh_database = startup_upgrade(root / "shrink.db")["status"] == "new"
@@ -80,12 +84,15 @@ class Application:
             self.scheduling = Scheduling()
             expression_model = model
             model = self.scheduling.wrap(model, "model")
+            learning_model = self.scheduling.wrap(learning_model, "model") if learning_model else model
+            summary_model = self.scheduling.wrap(summary_model, "model") if summary_model else model
+            compression_model = self.scheduling.wrap(compression_model, "model") if compression_model else model
             embed = self.scheduling.wrap(embed, "embedding")
             from .persistence.history import HistoryRepository
             from .persistence.inbox import InboxRepository
             from .services.history import ConversationHistory
             from .services.inbox import Inbox
-            self.history = ConversationHistory(HistoryRepository(self.database), self.messages, model, error)
+            self.history = ConversationHistory(HistoryRepository(self.database), self.messages, compression_model, error)
             self.history.spawn = self.tasks.spawn
             self.history.scheduling = self.scheduling
             self.inbox = Inbox(InboxRepository(self.database), self.messages, self.history)
@@ -136,11 +143,11 @@ class Application:
             self.digest = DigestService(
                 state=self.state, messages=self.messages, digests=self.digests, people=self.people,
                 memory=self.memory, glossary=self.glossary, review=self.review, runs=self.runs,
-                model=model, error=error, profile_hook=self.consolidation.profile,
+                model=summary_model, error=error, profile_hook=self.consolidation.profile,
             )
             self.learning = LearningService(
                 self.learning_repository, self.messages, self.state, self.persona,
-                self.expressions, model, error,
+                self.expressions, learning_model, error,
             )
             self.memes = MemeService(self.meme_repository, self.state, model, error)
             self.teach = TeachService(

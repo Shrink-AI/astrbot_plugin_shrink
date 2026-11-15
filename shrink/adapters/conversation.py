@@ -292,7 +292,10 @@ class ConversationAdapter:
             event.is_at_or_wake_command = True
             event.set_extra("enable_streaming", False)
             event.set_extra("enable_reasoning", False)
-            event.set_extra("selected_provider", cfg.model_provider)
+            binding = getattr(app, "model_settings", None)
+            selected = (binding.for_session(event.unified_msg_origin)["model_provider"]
+                        if binding else cfg.model_provider)
+            event.set_extra("selected_provider", selected)
             event.set_extra("shrink_reply", True)
         else:
             self.close_trace(event, "silent")

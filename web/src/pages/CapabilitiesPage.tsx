@@ -4,7 +4,7 @@ import { Alert, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Field, FieldLabel } from '@/components/ui/field';
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
@@ -23,6 +23,12 @@ const resources: Record<string, string> = {
 const native = (resource: string, action: string, args: Item = {}, confirmed = false) =>
   api<any>('/operations/native', 'POST', { resource, action, arguments: args, confirmed });
 const pretty = (value: unknown) => JSON.stringify(value, null, 2);
+const chatProtocols: Record<string, string> = {
+  openai_chat_completion: 'Chat Completions',
+  openai_responses: 'Responses',
+  anthropic_chat_completion: 'Messages',
+};
+const protocolName = (type: string) => chatProtocols[type] || type || '未设置';
 
 export function CapabilitiesPage() {
   const { action, revision, setError, busy, go } = useDashboard();
@@ -33,6 +39,7 @@ export function CapabilitiesPage() {
   const [code, setCode] = useState('');
   const [output, setOutput] = useState<any>(null);
   const [models, setModels] = useState<Item[]>([]);
+  const [modelSources, setModelSources] = useState<Item[]>([]);
   const [tools, setTools] = useState<Item[]>([]);
   const [documents, setDocuments] = useState<Item[]>([]);
   const [selectedKb, setSelectedKb] = useState('');
@@ -52,6 +59,20 @@ export function CapabilitiesPage() {
       setModels(Array.isArray(m) ? m : []); setTools(Array.isArray(t) ? t : []); setKnowledge(k);
     }).catch(e => setError(e.message));
   }, [revision]);
+  useEffect(() => {
+    if (resource !== 'models') return;
+    native('models', 'schema').then(schema => setModelSources(schema.sources || []))
+      .catch(e => setError(e.message));
+  }, [resource, revision]);
+  let modelConfig: Item | null = null;
+  try {
+    const parsed = JSON.parse(code);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) modelConfig = parsed;
+  } catch { /* Keep incomplete JSON editable; saving reports its parse error. */ }
+  const modelSource = modelSources.find(source => source.id === modelConfig?.provider_source_id);
+  const chatModel = resource === 'models' && modelConfig
+    && (modelConfig.provider_type || modelSource?.provider_type || editor?.provider_type || 'chat_completion') === 'chat_completion';
+  const protocol = modelConfig?.type || (modelConfig?.provider_source_id ? 'follow-source' : 'unset-protocol');
   const rows: Item[] = Array.isArray(data) ? data : data?.skills || data?.agents || data?.items || data?.jobs || [];
   const run = (op: string, args: Item, confirmed = false) => void action(async () => {
     const result = await native(resource, op, args, confirmed); setOutput(result);
@@ -74,7 +95,9 @@ export function CapabilitiesPage() {
       const { name, active, connected, tools, errlogs, ...config } = row;
       setCode(pretty(row.name ? config : { url: '', transport: 'streamable_http' }));
     } else if (resource === 'models') {
-      setCode(pretty(row.id ? row : { id: '', model: '', provider_source_id: '', enable: true }));
+      setCode(pretty(row.id ? row.config : {
+        id: '', model: '', type: 'openai_chat_completion', enable: true,
+      }));
     }
   }, '');
   const save = () => void action(async () => {
@@ -90,7 +113,7 @@ export function CapabilitiesPage() {
     } else if (resource === 'subagents') {
       if (!form.name?.trim() || !form.provider_id) throw new Error('请填写名称并选择模型');
       const agents = existing ? rows.map(x => x.name === form.name ? form : x) : [...rows, form];
-      await native('subagents', 'update', { ...data, main_enable: true, agents });
+      await native('subagents', 'update', { ...data, agents });
     } else if (resource === 'knowledge') {
       const fields = ['kb_id', 'kb_name', 'description', 'embedding_provider_id', 'rerank_provider_id',
         'top_k_dense', 'top_k_sparse', 'top_m_final'];
@@ -98,6 +121,7 @@ export function CapabilitiesPage() {
       await native('knowledge', existing ? 'update' : 'create', args);
     } else if (resource === 'models') {
       const config = JSON.parse(code);
+      if (chatModel && !config.type && !config.provider_source_id) throw new Error('请选择对话协议或模型来源');
       await native('models', existing ? 'update' : 'create', existing ? { id: form.id, config } : config);
     }
     setEditor(null);
@@ -109,6 +133,11 @@ export function CapabilitiesPage() {
         onChange={e => setEditor({ ...editor, [key]: e.target.value })} />
       : <Input id={`capability-${key}`} value={editor?.[key] || ''} disabled={key === 'name' && !!editor?.existing}
         onChange={e => setEditor({ ...editor, [key]: e.target.value })} />}
+  </Field>;
+  const knowledgeNumber = (key: string, label: string) => <Field key={key}>
+    <FieldLabel htmlFor={`capability-${key}`}>{label}</FieldLabel>
+    <Input id={`capability-${key}`} type="number" min={0} step={1} value={editor?.[key] ?? ''}
+      onChange={e => setEditor({ ...editor, [key]: e.target.value === '' ? undefined : Number(e.target.value) })} />
   </Field>;
   const modelSelect = (key: string, label: string, capability?: string) => <Field key={key}>
     <FieldLabel htmlFor={`capability-${key}`}>{label}</FieldLabel>
@@ -181,7 +210,10 @@ export function CapabilitiesPage() {
           {rows.map((row, i) => <article key={row.name || row.id || row.kb_id || i}
             className="flex flex-col gap-2 border-b py-3 first:pt-0 last:border-b-0 last:pb-0">
             <strong className="break-words">{row.display_name || row.kb_name || row.name || row.id}</strong>
-            <p className="text-sm text-muted-foreground break-words">{row.desc || row.description || row.public_description || row.model || ''}</p>
+            <p className="text-sm text-muted-foreground break-words">
+              {row.desc || row.description || row.public_description || row.model || ''}
+              {resource === 'models' && row.provider_type === 'chat_completion' && ` · ${protocolName(row.effective_type)}`}
+            </p>
             <div className="flex flex-wrap items-center gap-2">
               {resource === 'plugins' && <>
                 <span className="text-xs text-muted-foreground">{row.activated ? '已启用' : '已停用'} · {row.version}</span>
@@ -277,7 +309,33 @@ export function CapabilitiesPage() {
             {field('kb_name', '知识库名称')}{field('description', '用途', true)}
             {modelSelect('embedding_provider_id', '向量模型', 'embedding')}
             {modelSelect('rerank_provider_id', '重排模型（可选）', 'rerank')}
+            {knowledgeNumber('top_k_dense', '向量检索候选条数')}
+            {knowledgeNumber('top_k_sparse', '关键词检索候选条数')}
+            {knowledgeNumber('top_m_final', '最终返回条数')}
           </>}
+          {chatModel && <Field>
+            <FieldLabel htmlFor="model-protocol">对话协议</FieldLabel>
+            <Select value={protocol} onValueChange={value => {
+              if (!modelConfig) return;
+              const next = { ...modelConfig };
+              if (value === 'follow-source') delete next.type;
+              else next.type = value;
+              setCode(pretty(next));
+            }}>
+              <SelectTrigger id="model-protocol" className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent><SelectGroup>
+                {protocol === 'unset-protocol' && <SelectItem value="unset-protocol" disabled>请选择协议</SelectItem>}
+                {modelConfig?.provider_source_id && <SelectItem value="follow-source">
+                  跟随来源（{protocolName(modelSource?.type || editor.source_type)}）
+                </SelectItem>}
+                {Object.entries(chatProtocols).map(([type, label]) =>
+                  <SelectItem key={type} value={type}>{label}</SelectItem>)}
+                {modelConfig?.type && !chatProtocols[modelConfig.type] &&
+                  <SelectItem value={modelConfig.type}>{protocolName(modelConfig.type)}（当前协议）</SelectItem>}
+              </SelectGroup></SelectContent>
+            </Select>
+            <FieldDescription>来源须支持所选接口；Chat Completions、Responses 不会自动补 /v1。</FieldDescription>
+          </Field>}
           {['skills', 'mcp', 'models'].includes(resource) && <Field>
             <FieldLabel htmlFor="capability-code">{resource === 'skills' ? 'SKILL.md 内容' : '连接配置（JSON）'}</FieldLabel>
             <Textarea id="capability-code" rows={16} className="min-h-72 font-mono text-xs" value={code}

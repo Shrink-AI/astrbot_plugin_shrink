@@ -12,6 +12,7 @@ from ..prompts import tag
 from ..prompts import text as prompt_text
 from . import quality
 from .model_output import ask_json
+from .models import for_source
 
 MIN_AGE = 600
 FULL_BATCH = 40
@@ -117,7 +118,7 @@ class DigestService:
                 glossary = "、".join(list(self.memory.repository.glossary_terms())[:60])
                 name = rows[0]["source_name"] or source
                 result = await ask_json(
-                    self.model,
+                    for_source(self.model, source),
                     extract_prompt(group=name, people=roster, known=known, glossary=glossary,
                                    lines=lines),
                     prompt_text(EXTRACT),
@@ -127,7 +128,7 @@ class DigestService:
                     raise ValueError("digest output is not an object")
                 gated = self._gate(result, batch, stats)
                 if self.state.settings.verify_enabled and gated["claims"]:
-                    await self._verify(gated, batch, stats)
+                    await self._verify(gated, batch, stats, source)
                 self._dedupe_topics(gated, stats)
                 summary = str(result.get("summary") or "")[:600]
                 await self._write(gated, known_refs, run_id, source, stats)
@@ -204,7 +205,7 @@ class DigestService:
             kept.append(claim)
         gated["claims"] = kept
 
-    async def _verify(self, gated, batch, stats):
+    async def _verify(self, gated, batch, stats, source=""):
         """Second opinion: drop claims the cited lines do not directly support, or that are jokes."""
         by_id = {row["id"]: row for row in batch.lines.values()}
         entries, targets = [], []
@@ -228,7 +229,7 @@ class DigestService:
             text.append(f"{n}. 说法：{claim}\n   依据：\n{proof}")
         stats["verify"] = tag(VERIFY)
         try:
-            verdicts = await ask_json(self.model, verify_prompt("\n".join(text)), prompt_text(VERIFY),
+            verdicts = await ask_json(for_source(self.model, source), verify_prompt("\n".join(text)), prompt_text(VERIFY),
                                       timeout=90)
             verdicts = {
                 int(v.get("n")): v for v in verdicts if isinstance(v, dict) and str(v.get("n")).isdigit()

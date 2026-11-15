@@ -12,6 +12,7 @@ from ..ports import ChatModel, ErrorSink
 from ..prompts.knowledge import MEMES
 from ..prompts import text as prompt_text
 from .model_output import parse_json
+from .models import for_source
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 Image.MAX_IMAGE_PIXELS = 16_000_000
@@ -87,7 +88,7 @@ class MemeService:
                 uri = "base64://" + base64.b64encode(data).decode()
                 result = parse_json(
                     await asyncio.wait_for(
-                        self.model(prompt_text("memes.task"), prompt_text(MEMES), [uri]),
+                        for_source(self.model, source)(prompt_text("memes.task"), prompt_text(MEMES), [uri]),
                         45,
                     )
                 )

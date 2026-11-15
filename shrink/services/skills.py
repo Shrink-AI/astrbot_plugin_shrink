@@ -12,6 +12,7 @@ from ..prompts.skills import REFLECT, reflect_prompt
 from ..prompts import text as prompt_text
 from ..text_rules import INJECTION, grams
 from .model_output import ask_json
+from .models import for_source
 from .tool_evidence import execution_evidence
 
 # Wait this long before judging an episode, so corrections and follow-ups are visible.
@@ -188,7 +189,7 @@ class SkillService:
             follow_up=self._follow_up(episode),
             skills=known,
         )
-        result = await ask_json(self.model, prompt, prompt_text(REFLECT), timeout=90)
+        result = await ask_json(for_source(self.model, episode["source"]), prompt, prompt_text(REFLECT), timeout=90)
         if not isinstance(result, dict):
             raise ValueError("reflection is not an object")
         verdict = str(result.get("verdict") or "unclear")

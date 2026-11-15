@@ -32,9 +32,10 @@ LEGACY = {
 
 
 class TaskStates:
-    def __init__(self, repository, retry_limit=3):
+    def __init__(self, repository, retry_limit=3, *, retry_limit_provider=None):
         self.repository = repository
         self.retry_limit = max(0, min(3, retry_limit))
+        self.retry_limit_provider = retry_limit_provider
 
     def task(self, task_id):
         return self.repository.task(task_id)
@@ -114,8 +115,9 @@ class TaskStates:
 
     def failure(self, task_id, error, *, now=None):
         row = self.task(task_id)
+        limit = self.retry_limit_provider() if self.retry_limit_provider is not None else self.retry_limit
         fault = classify_error(error, unclosed_tools=self.unknown_tools(task_id),
-                               exhausted=row["retry_count"] >= self.retry_limit)
+                               exhausted=row["retry_count"] >= max(0, min(3, limit)))
         result = f"{type(error).__name__}: {str(error)[:2000]}"
         with self.repository.transaction():
             self.repository.end_attempt(task_id, "unknown" if fault.state == "reconciling" else "failed",

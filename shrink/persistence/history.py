@@ -61,6 +61,10 @@ class HistoryRepository:
                 con.execute("UPDATE conversation_events SET session=? WHERE session=?", (identity, source))
                 con.execute("UPDATE conversation_checkpoints SET session=? WHERE session=?", (identity, source))
 
+    def session_for_source(self, source):
+        rows = self.db.rows("SELECT id FROM conversation_sessions WHERE source=? AND instance!=''", (source,))
+        return rows[0]["id"] if len(rows) == 1 else ""
+
     def migrate(self):
         from .inbox import InboxRepository, input_id
         InboxRepository(self.db)

@@ -8,6 +8,7 @@ import uuid
 from ..persistence.execution_context import checkpoint_value
 from ..prompts import render, text as prompt_text
 from .scheduling import in_lane
+from .models import for_source
 
 
 class ConversationHistory:
@@ -248,7 +249,8 @@ class ConversationHistory:
                            < r["id"] <= checkpoint["end_event"]]
                 system = prompt_text("history.compress_system")
                 prompt = self.compression_prompt(checkpoint, previous, covered, system)
-                result = await asyncio.wait_for(self.model(prompt, system), self.timeout)
+                result = await asyncio.wait_for(
+                    for_source(self.model, checkpoint["session"])(prompt, system), self.timeout)
                 if not result or not result.strip():
                     raise ValueError("empty conversation summary")
                 text = result.strip()
