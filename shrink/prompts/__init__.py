@@ -29,9 +29,15 @@ def placeholders(text):
 
 def text(key):
     drafts = _drafts.get()
-    if drafts and key in drafts:
-        return drafts[key]
-    return _overrides.get(key, CATALOG[key]["text"])
+    value = drafts[key] if drafts and key in drafts else _overrides.get(key, CATALOG[key]["text"])
+    if key == "tool.shrink_chat_history":
+        # Existing custom prose remains intact; new optional parameters keep their defaults.
+        _, actual = tool_parts(value)
+        _, defaults = tool_parts(CATALOG[key]["text"])
+        for name in ("message_id", "image_index"):
+            if name not in actual:
+                value += "\n" + name + "：" + defaults[name]
+    return value
 
 
 @contextmanager
@@ -91,6 +97,8 @@ def check_tool(key, value):
     if not description:
         problems.append("工具说明不能为空")
     missing, extra = set(expected) - set(params), set(params) - set(expected)
+    if key == "tool.shrink_chat_history":
+        missing -= {"message_id", "image_index"}
     if missing:
         problems.append("缺少参数 " + "、".join(sorted(missing)))
     if extra:

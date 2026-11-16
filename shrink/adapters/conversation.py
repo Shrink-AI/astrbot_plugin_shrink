@@ -58,7 +58,8 @@ class QQSticker(BaseMessageComponent):
 
 
 class ConversationAdapter:
-    def __init__(self, app, plugin_module, umos=None, host_quotes=None, router_prompt=None, catalog=None):
+    def __init__(self, app, plugin_module, umos=None, host_quotes=None, router_prompt=None, catalog=None,
+                 provider_for=None):
         self.app = app
         self.plugin_module = plugin_module
         self.umos = umos if umos is not None else {}
@@ -67,6 +68,7 @@ class ConversationAdapter:
         # The host's instruction to delegate through handoff tools the foreground no longer has.
         self.router_prompt = router_prompt or (lambda: "")
         self.decision_catalog = catalog or (lambda: [])
+        self.provider_for = provider_for
         self.debouncer = Debouncer()
         self.notifications = Notifications(app)
         self.traces = getattr(app, "turn_traces", None) or TurnTraceRepository(app.database)
@@ -629,7 +631,8 @@ class ConversationAdapter:
         # AstrBot's history writer explicitly skips requests without a conversation.
         req.conversation = None
         unclaimed = [row["message_id"] for row in app.inbox.repository.pending("chat", session)
-                     if row["id"] not in identities and row["claimed"] is None]
+                     if row["id"] not in identities and row["claimed"] is None
+                     and not app.attachments.for_message(row["message_id"])]
         req.contexts = await app.history.contexts(
             session, app.state.settings.history_compress_tokens,
             retain_ratio=app.state.settings.history_retain_ratio, exclude=[turn.id, *unclaimed])
@@ -644,6 +647,37 @@ class ConversationAdapter:
         original = app.messages.get_many([turn.id])
         current = original[0]["text"] if original else turn.text
         req.prompt = f"[发言人 {turn.user_id} · {turn.name or turn.user_id}]\n{current}"
+        from .chat_images import ChatImages, image_ref, selected_refs
+        images = ChatImages(app.attachments, session)
+        event.set_extra("shrink_images", images)
+        provider = await self.provider_for(event) if self.provider_for else None
+        modalities = getattr(provider, "provider_config", {}).get("modalities")
+        event.set_extra("shrink_image_modalities", modalities)
+        current_rows = app.database.rows(
+            "SELECT e.*,m.has_image FROM conversation_events e LEFT JOIN messages m ON m.id=e.message_id "
+            "WHERE e.session=? AND e.message_id=?", (session, turn.id))
+        current_parts = app.attachments.parts_for(current_rows[0]) if current_rows else []
+        present = {image_ref(p) for m in req.contexts if isinstance(m.get("content"), list)
+                   for p in m["content"] if image_ref(p)}
+        present.update(image_ref(p) for p in current_parts if image_ref(p))
+        quoted = [ref for ref in selected_refs(app, event) if ref not in present]
+        if quoted:
+            req.contexts.append({"role": "user", "content": [
+                {"type": "text", "text": "[本轮明确引用的原消息图片]"},
+                *[{"type": "image_url", "image_url": {"url": ref}} for ref in quoted]]})
+        if current_parts:
+            # The archive owns current images too, including recovered inputs.
+            req.image_urls = []
+            req.extra_user_content_parts = [p for p in (getattr(req, "extra_user_content_parts", None) or [])
+                                            if (p.get("type") if isinstance(p, dict) else getattr(p, "type", "")) != "image_url"]
+            req.prompt = f"[发言人 {turn.user_id} · {turn.name or turn.user_id}]"
+            if not any(p["type"] == "text" for p in current_parts):
+                current_parts = [{"type": "text", "text": current}, *current_parts]
+        combined = [*req.contexts, {"role": "user", "content": current_parts}]
+        resolved = await images.resolve(combined, modalities=modalities)
+        req.contexts = resolved[:-1]
+        if current_parts:
+            req.extra_user_content_parts.extend(resolved[-1]["content"])
         event.set_extra("shrink_expression_context",
                         app.outbound.turn_context(window.text, cards, memories, examples))
         event.set_extra("shrink_form", form)
@@ -1090,7 +1124,9 @@ class ConversationAdapter:
         text = " ".join(str(getattr(c, "text", "") or "") for c in content) or str(result or "")
         identity = event.get_extra("shrink_tool_call_id")
         if identity and getattr(self.app, "history", None):
-            self.app.history.tool_end(event.unified_msg_origin, identity, text)
+            from .chat_images import receipt_refs
+            refs = receipt_refs(result) if name == "shrink_chat_history" else []
+            self.app.history.tool_end(event.unified_msg_origin, identity, text, image_refs=refs)
         tools.append(tool_step(getattr(tool, "name", str(tool)), args, text))
         finish_tools(event)
         self.enter(event, "model")
@@ -1136,15 +1172,30 @@ class ConversationAdapter:
             return prompt_text("toolret.remember_candidate")
         return prompt_text("toolret.remember_saved")
 
-    async def chat_history(self, event, keyword="", person="", days=3):
+    async def chat_history(self, event, keyword="", person="", days=3, message_id="", image_index=0):
         turn = self.tool_turn(event)
         if not turn:
             return prompt_text("toolret.no_turn")
+        if message_id:
+            from .chat_images import ChatImages, receipt_refs
+            from mcp.types import CallToolResult, TextContent
+            runner = (event.get_extra("shrink_task_runners") or {}).get(CURRENT_TASK.get())
+            images = getattr(runner, "images", None) or event.get_extra("shrink_images")
+            images = images or ChatImages(self.app.attachments, event.unified_msg_origin)
+            modalities = (getattr(runner.provider, "provider_config", {}).get("modalities") if runner
+                          else event.get_extra("shrink_image_modalities"))
+            try:
+                result = await images.read(message_id, image_index, modalities=modalities)
+            except (ValueError, OSError) as exc:
+                return CallToolResult(isError=True, content=[TextContent(type="text", text=str(exc))])
+            event.set_extra("shrink_read_images", list(dict.fromkeys([
+                *(event.get_extra("shrink_read_images") or []), *receipt_refs(result)])))
+            return result
         if keyword.startswith("checkpoint:"):
             import json
             result = self.app.history.read_checkpoint(event.unified_msg_origin, int(keyword.split(":", 1)[1]))
             return json.dumps(result, ensure_ascii=False)
-        return self.app.tools.history(turn.source, keyword, person, days)
+        return self.app.tools.history(turn.source, keyword, person, days, session=event.unified_msg_origin)
 
     async def lookup(self, event, query):
         turn = self.tool_turn(event)

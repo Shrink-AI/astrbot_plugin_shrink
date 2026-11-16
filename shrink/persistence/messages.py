@@ -220,15 +220,17 @@ class MessageRepository:
         )
         return [r for r in rows if r["id"] not in set(exclude)][:limit]
 
-    def search(self, source, term="", user_id="", since=0.0, limit=15):
+    def search(self, source, term="", user_id="", since=0.0, limit=15, *, session=None):
         """One conversation's messages, newest first, filtered by word, speaker and time."""
         return self.database.rows(
             "SELECT m.*,COALESCE(p.kind,'human') AS speaker_kind,COALESCE(p.name,m.speaker_name) "
             "AS person_name FROM messages m LEFT JOIN people p ON p.id=m.user_id "
             "WHERE m.source=? AND m.created>=? AND (?='' OR instr(m.text,?)>0) "
-            "AND (?='' OR m.user_id=?) AND length(trim(m.text))>0 "
+            "AND (?='' OR m.user_id=?) AND (length(trim(m.text))>0 OR m.has_image=1) "
+            + ("AND EXISTS(SELECT 1 FROM conversation_events e WHERE e.message_id=m.id AND e.session=?) "
+               if session else "") +
             "ORDER BY m.created DESC LIMIT ?",
-            (source, since, term, term, user_id, user_id, limit),
+            (source, since, term, term, user_id, user_id, *([session] if session else []), limit),
         )
 
     def between(self, source, start, end, limit=40):

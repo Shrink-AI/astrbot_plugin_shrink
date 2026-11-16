@@ -24,7 +24,7 @@ async def test_attachment_copy_survives_original_and_is_scoped(tmp_path):
     original.unlink()
     saved, path = app.attachments.file(row["id"], turn.source)
     assert path.read_text("utf-8") == "保留这份原文"
-    assert saved["locator"] == "" and row["status"] == "saved"
+    assert saved["locator"] == "attachment:" + row["id"] and row["status"] == "saved"
     with pytest.raises(ValueError, match="当前会话"):
         app.attachments.file(row["id"], "qq:private:456")
     await app.close()

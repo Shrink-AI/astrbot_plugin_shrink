@@ -1,5 +1,6 @@
 """Deliver durable inputs between complete native runner steps."""
 import asyncio
+import json
 
 from ..services.task_errors import TaskFailure
 
@@ -29,7 +30,8 @@ def task_runner(inputs, task_id):
 
         async def step(self):
             def snapshot():
-                return list(self.run_context.messages)
+                images = getattr(self, "images", None)
+                return images.compact(self.run_context.messages) if images else list(self.run_context.messages)
             try:
                 pending = await inputs.deliver(
                     task_id, lambda text: self.run_context.messages.append(
@@ -38,6 +40,11 @@ def task_runner(inputs, task_id):
                 raise asyncio.CancelledError() from None
             from ..services.task_recovery import reconciliation
             previous_unknown = reconciliation(inputs.tasks.events(task_id))
+            images = getattr(self, "images", None)
+            if images:
+                restored = await images.resolve(images.compact(self.run_context.messages),
+                                                modalities=self.provider.provider_config.get("modalities"))
+                self.run_context.messages[:] = [Message.model_validate(m) for m in restored]
             responded = False
             async for response in super().step():
                 responded = responded or response.type == "agent_stats"
@@ -56,7 +63,7 @@ def task_runner(inputs, task_id):
 
 
 async def run_task_agent(context, *, event, chat_provider_id, prompt, system_prompt, tools,
-                         contexts, agent_hooks, inputs, task_id, wrapper, max_steps=128):
+                         contexts, agent_hooks, inputs, task_id, wrapper, max_steps=128, images=None):
     from astrbot.core.astr_agent_tool_exec import FunctionToolExecutor
     from astrbot.core.provider.entities import ProviderRequest
     from astrbot.core.tools.computer_tools.util import (
@@ -82,11 +89,23 @@ async def run_task_agent(context, *, event, chat_provider_id, prompt, system_pro
         prompt=None if saved is not None else prompt,
         system_prompt="" if saved is not None else system_prompt,
         contexts=saved if saved is not None else list(contexts), func_tool=tools)
+    if images and saved is None:
+        try:
+            material = json.loads(prompt)
+        except (ValueError, TypeError):
+            material = {}
+        refs = material.get("image_refs", []) if isinstance(material, dict) else []
+        if refs:
+            request.contexts.append({"role": "user", "content": [
+                {"type": "text", "text": "[本任务明确引用的原图]"},
+                *[{"type": "image_url", "image_url": {"url": ref}} for ref in refs
+                  if isinstance(ref, str) and ref.startswith("attachment:")]]})
     kwargs = {}
     if tools and tools.get_tool("astrbot_file_read_tool"):
         kwargs = {"tool_result_overflow_dir": get_astrbot_system_tmp_path(),
                   "read_tool": tools.get_tool("astrbot_file_read_tool")}
     runner = task_runner(inputs, task_id)
+    runner.images = images
     if tools and tools.get_tool("shrink_orchestrate"):
         from astrbot.core.agent.tool import ToolSet
         allowed = {tool.name: tool for tool in tools.tools if tool.active}

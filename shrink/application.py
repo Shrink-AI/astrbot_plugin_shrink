@@ -134,6 +134,7 @@ class Application:
             self.expression.outbound = self.outbound
             self.materials = Materials(self)
             self.attachments = Attachments(self)
+            self.history.attachments = self.attachments
             self.glossary = GlossaryService(self.state, self.memory, search, model, error, self.review)
             self.consolidation = ConsolidationService(
                 state=self.state, messages=self.messages, digests=self.digests, people=self.people,
@@ -163,6 +164,7 @@ class Application:
                 memory=self.memory, memes=self.memes, state=self.state, error=error,
                 recent=self.recent,
             )
+            self.tools.attachments = self.attachments
             self.scheduler = Scheduler(
                 self.state, self.learning, self.memory, error,
                 digest=self.digest, consolidation=self.consolidation, skills=self.skills,

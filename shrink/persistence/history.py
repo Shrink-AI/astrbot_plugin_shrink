@@ -49,6 +49,10 @@ class HistoryRepository:
                     con.execute(f"ALTER TABLE conversation_checkpoints ADD COLUMN {name} {definition}")
         if migrate:
             self.migrate()
+        with database.transaction() as con:
+            columns = {r["name"] for r in con.execute("PRAGMA table_info(conversation_events)")}
+            if "content_parts" not in columns:
+                con.execute("ALTER TABLE conversation_events ADD COLUMN content_parts TEXT NOT NULL DEFAULT '[]'")
     def session(self, identity, *, instance="", platform="", kind="", external_id="", source=""):
         with self.db.transaction() as con:
             con.execute("INSERT OR IGNORE INTO conversation_sessions"
@@ -119,18 +123,23 @@ class HistoryRepository:
             con.execute("INSERT INTO kv VALUES(?, 'true')", (self.MIGRATION,))
 
     def append(self, session, event_key, role, message_id=None, *, speaker="", tool_calls=None,
-               tool_call_id=None, kind="message", target=""):
+               tool_call_id=None, kind="message", target="", content_parts=None):
         with self.db.transaction() as con:
             con.execute("INSERT OR IGNORE INTO conversation_events"
-                        "(event_key,session,role,message_id,speaker,tool_calls,tool_call_id,kind,target,created)"
-                        " VALUES(?,?,?,?,?,?,?,?,?,?)",
+                        "(event_key,session,role,message_id,speaker,tool_calls,tool_call_id,kind,target,created,content_parts)"
+                        " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                         (event_key, session, role, message_id, speaker,
                          json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None,
-                         tool_call_id, kind, target, time.time()))
+                         tool_call_id, kind, target, time.time(), json.dumps(content_parts or [], ensure_ascii=False)))
+
+    def set_parts(self, message_id, parts):
+        with self.db.transaction() as con:
+            con.execute("UPDATE conversation_events SET content_parts=? WHERE message_id=? AND content_parts='[]'",
+                        (json.dumps(parts, ensure_ascii=False), message_id))
 
     def events(self, session):
         return self.db.rows(
-            "SELECT e.*,m.text,m.speaker_name FROM conversation_events e LEFT JOIN messages m "
+            "SELECT e.*,m.text,m.speaker_name,m.has_image FROM conversation_events e LEFT JOIN messages m "
             "ON m.id=e.message_id WHERE e.session=? ORDER BY e.id", (session,))
 
     def revised(self, message_id):

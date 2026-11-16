@@ -230,11 +230,13 @@ class ShrinkPlugin(Star):
         self.host.conversation.tool_used(event, tool, tool_args, tool_result)
 
     @filter.llm_tool(name="shrink_chat_history")
-    @tool_doc("shrink_chat_history", keyword="string", person="string", days="number")
+    @tool_doc("shrink_chat_history", keyword="string", person="string", days="number",
+              message_id="string", image_index="number")
     async def chat_history(
-        self, event: AstrMessageEvent, keyword: str = "", person: str = "", days: float = 3
+        self, event: AstrMessageEvent, keyword: str = "", person: str = "", days: float = 3,
+        message_id: str = "", image_index: int = 0
     ):
-        return await self.host.conversation.chat_history(event, keyword, person, days)
+        return await self.host.conversation.chat_history(event, keyword, person, days, message_id, image_index)
 
     @filter.llm_tool(name="shrink_chat_attachments")
     @tool_doc("shrink_chat_attachments", action="string", keyword="string", attachment_id="string")

@@ -65,7 +65,7 @@ class ToolService:
         return f"[{_stamp(row['created'])}] {speaker}: {text.strip() or '[消息]'}"
 
     # ---- chat history ------------------------------------------------------------------------------
-    def history(self, source, keyword="", person="", days=3):
+    def history(self, source, keyword="", person="", days=3, *, session=None):
         try:
             days = float(days or 3)
         except (TypeError, ValueError):
@@ -85,21 +85,36 @@ class ToolService:
                     "“" + person + "”可能是：" + "、".join(self.people.display(u) for u in found)
                     + f"，下面按{self.people.display(uid)}查"
                 )
-        rows = self.messages.search(source, keyword, uid, since, HISTORY_LINES * 2)
+        rows = self.messages.search(source, keyword, uid, since, HISTORY_LINES * 2, session=session)
         rows = [r for r in rows if not (keyword and r["is_bot"])]  # Echoes of itself add nothing.
         lines = []
+        attachments = getattr(self, "attachments", None)
+        def line(row):
+            if attachments and session:
+                try:
+                    images = attachments.message_images(row["id"], session)
+                except ValueError:
+                    return f"[消息 {row['id']} 已撤回、纠正或不属于当前会话]"
+                info = " ".join(f"{i}:{a['status']}" for i, a in enumerate(images))
+                return self._line(row) + f" [message_id={row['id']}" + (
+                    f" 图片{len(images)}张 {info}" if images else "") + "]"
+            return self._line(row)
         if keyword:
             hits = rows[:6]
             # Neighbours explain a hit (“那个链接” is often the line right before or after).
             context = self.messages.around([r["id"] for r in hits], before=1, after=1, span=600)
+            if session:
+                allowed = {r["message_id"] for r in self.messages.database.rows(
+                    "SELECT message_id FROM conversation_events WHERE session=?", (session,))}
+                context = [r for r in context if r["id"] in allowed]
             for r in context:
-                lines.append(("→ " if r["cited"] else "   ") + self._line(r))
+                lines.append(("→ " if r["cited"] else "   ") + line(r))
             for r in rows[6:HISTORY_LINES]:
-                lines.append("→ " + self._line(r))
+                lines.append("→ " + line(r))
         else:
-            lines = [self._line(r) for r in reversed(rows[:HISTORY_LINES])]
+            lines = [line(r) for r in reversed(rows[:HISTORY_LINES])]
         summaries = []
-        if not keyword and not uid:
+        if not keyword and not uid and not session:
             for digest in self.digests.overlapping(source, since, 6):
                 summaries.append(
                     f"（{_stamp(digest['start'])}～{_stamp(digest['end'])} 摘要）{digest['summary']}"
@@ -112,7 +127,10 @@ class ToolService:
         parts = notes + summaries
         if lines:
             parts.append(("（→ 是命中的消息）\n" if keyword else "") + "\n".join(lines))
-        return "\n".join(parts)[:OUTPUT_LIMIT]
+        output = "\n".join(parts)
+        if len(output) > OUTPUT_LIMIT:
+            output = output[:OUTPUT_LIMIT - 30].rsplit("\n", 1)[0] + "\n[其余消息已省略，可缩小查询范围]"
+        return output
 
     # ---- people and memories -----------------------------------------------------------------------
     async def lookup(self, query, *, source, speaker, private, request="", decision=None):

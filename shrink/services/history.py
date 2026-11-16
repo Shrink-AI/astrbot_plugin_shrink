@@ -22,6 +22,7 @@ class ConversationHistory:
         self.spawn = self.scheduling = None
         self.worker = None
         self.locks = {}
+        self.attachments = None
 
     def sent(self, session, source, text, sender="", reason="", *, identity):
         message_id = "sent:" + identity
@@ -35,11 +36,13 @@ class ConversationHistory:
                   "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]
         self.repository.append(session, "call:" + identity, "assistant", tool_calls=calls, kind="tool_call")
 
-    def tool_end(self, session, identity, text):
+    def tool_end(self, session, identity, text, image_refs=()):
         message_id = "tool:" + identity
         with self.repository.db.transaction():
             self.messages.raw(message_id, session, text, sender="tool")
-            self.repository.append(session, message_id, "tool", message_id, tool_call_id=identity)
+            self.repository.append(session, message_id, "tool", message_id, tool_call_id=identity,
+                                   content_parts=[{"type": "image_url", "image_url": {"url": ref}}
+                                                  for ref in image_refs])
 
     def revise(self, session, message_id, *, sender, identity, text=None, message_ref=None):
         originals = [r for r in self.repository.events(session) if r["message_id"] == message_id]
@@ -64,10 +67,12 @@ class ConversationHistory:
         row = self.repository.checkpoint(session, identity)
         if not row:
             raise ValueError("当前会话不存在这个压缩检查点")
-        return {"checkpoint": row, "originals": self.references(session, json.loads(row["message_refs"]))}
+        originals = self.references(session, json.loads(row["message_refs"]))
+        if self.attachments:
+            originals = [{**r, "images": self.attachments.for_message(r["id"])} for r in originals]
+        return {"checkpoint": row, "originals": originals}
 
-    @staticmethod
-    def render(rows):
+    def render(self, rows):
         changes = {r["target"]: r for r in rows if r["kind"] in {"corrected", "retracted"}}
         results = {r["tool_call_id"] for r in rows if r["role"] == "tool"}
         rendered = []
@@ -100,6 +105,16 @@ class ConversationHistory:
                 if len(text) > 500:
                     message["content"] = json.dumps(receipt(
                         text, row["message_id"], 500), ensure_ascii=False)
+            parts = self.attachments.parts_for(row) if self.attachments else []
+            if parts and row["message_id"] not in changes and row["kind"] not in {"corrected", "retracted"}:
+                if row["role"] == "user":
+                    header = f"[发言人 {row['speaker']} · {row['speaker_name'] or row['speaker']}]\n"
+                    body = parts if any(p["type"] == "text" for p in parts) else [
+                        {"type": "text", "text": text}, *parts]
+                    message["content"] = [{"type": "text", "text": header}, *body]
+                else:
+                    # Tool image receipts stay paired; actual images are a following user message.
+                    message["_images"] = [p for p in parts if p["type"] == "image_url"]
             rendered.append((row, message))
         ordered, index = [], 0
         while index < len(rendered):
@@ -120,14 +135,32 @@ class ConversationHistory:
             arrivals = [item for item in block[1:] if item[1].get("tool_call_id") not in calls]
             ordered.extend(({**r, "_block": row["id"]}, m) for r, m in [block[0], *outputs, *arrivals])
             index = end
-        return ordered
+        expanded, pending_images, block = [], [], None
+        for row, message in ordered:
+            current_block = row.get("_block", row["id"])
+            if current_block != block:
+                expanded.extend(pending_images)
+                pending_images = []
+                block = current_block
+            images = message.pop("_images", [])
+            expanded.append((row, message))
+            if images:
+                pending_images.append((row, {"role": "user", "content": [
+                    {"type": "text", "text": "[工具返回的原图]"}, *images]}))
+        expanded.extend(pending_images)
+        return expanded
 
     @staticmethod
     def size(message):
+        if isinstance(message.get("content"), list):
+            images = sum(p.get("type") == "image_url" for p in message["content"])
+            message = {**message, "content": [p for p in message["content"] if p.get("type") != "image_url"]}
+        else:
+            images = 0
         text = json.dumps(message, ensure_ascii=False)
         cjk = sum("\u4e00" <= ch <= "\u9fff" for ch in text)
         emoji = len(re.findall("[\u200d\u2600-\u27bf\ufe00-\ufe0f\U0001f000-\U0001faff]", text))
-        return max(1, int(cjk * .6 + emoji * 2 + (len(text) - cjk - emoji) * .3))
+        return images * 765 + max(1, int(cjk * .6 + emoji * 2 + (len(text) - cjk - emoji) * .3))
 
     @staticmethod
     def tail(items, budget):
@@ -222,6 +255,7 @@ class ConversationHistory:
             material = ([{"role": "user", "content":
                          "[前面还有未包含的更早记录；可通过本检查点的原文引用取回。]"}] if omitted else [])
             material += prefix + [m for _, m in covered[starts[index]:]]
+            material = [self.compression_view(m) for m in material]
             return render("history.compress", messages=json.dumps(material, ensure_ascii=False),
                           max_tokens=allowance)
 
@@ -247,6 +281,15 @@ class ConversationHistory:
         if not fits(prompt):
             raise ValueError("history compression template exceeds input budget")
         return prompt
+
+    @staticmethod
+    def compression_view(message):
+        if not isinstance(message.get("content"), list):
+            return message
+        return {**message, "content": [
+            {"type": "text", "text": "[原图引用 " + p["image_url"]["url"] +
+             "；只保留已有解读，没有解读则标为未解读，需细节时读取原图]"}
+            if p.get("type") == "image_url" else p for p in message["content"]]}
 
     async def _summarize_pending(self):
         while pending := self.repository.pending():

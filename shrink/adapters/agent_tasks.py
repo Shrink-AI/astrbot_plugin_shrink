@@ -62,6 +62,10 @@ class AgentTasks:
                 quote = getattr(original, "quote", None)
                 if quote:
                     material["quoted_context"] = quote
+                from .chat_images import selected_refs
+                refs = selected_refs(self.app, event)
+                if refs:
+                    material["image_refs"] = refs
             payload = json.dumps(material, ensure_ascii=False)
             if len(payload) > 32000:
                 raise ValueError('任务与原始上下文合计超过32000字，请缩短派工说明')
@@ -334,6 +338,7 @@ class AgentTasks:
         # Same native runner as handoff, with explicit hooks so partial writes survive timeouts.
         async def execute():
             from .task_runner import run_task_agent
+            from .chat_images import ChatImages
             experience = ""
             skills = getattr(self.app, "skills", None)
             if skills is not None:
@@ -346,7 +351,8 @@ class AgentTasks:
                     + '\n' + prompt_text('skills.authoring') + '\n' + experience, tools=tools,
                 contexts=handoff.agent.begin_dialogs or [], max_steps=128,
                 agent_hooks=AuditHooks(), inputs=self.task_inputs, task_id=CURRENT_TASK.get(),
-                wrapper=wrapper)
+                wrapper=wrapper, images=(ChatImages(self.app.attachments, event.unified_msg_origin)
+                                         if getattr(self.app, "attachments", None) else None))
         task_id = CURRENT_TASK.get()
         signal = self.question_signals.setdefault(task_id, asyncio.Event())
         execution = asyncio.create_task(execute())

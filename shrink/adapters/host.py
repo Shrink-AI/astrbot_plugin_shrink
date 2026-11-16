@@ -50,6 +50,10 @@ class PluginHost:
                 return ""
 
         from .decision_backends import HaikuDecisionBackend, LayaDecisionBackend, registered_catalog
+        async def provider_for(event):
+            selected = event.get_extra("selected_provider")
+            return (context.get_provider_by_id(selected) if selected
+                    else await context.get_using_provider_async(umo=event.unified_msg_origin))
         self.application.decisions.backends = {
             "haiku": HaikuDecisionBackend(context, self.application.state),
             "laya": LayaDecisionBackend(self.application.state),
@@ -57,6 +61,7 @@ class PluginHost:
         self.conversation = ConversationAdapter(
             self.application, plugin_module, umos=self.bridge.umos, host_quotes=host_quotes,
             router_prompt=router_prompt, catalog=lambda: registered_catalog(context),
+            provider_for=provider_for,
         )
         self.dashboard = None
         self.static_dir = static_dir
