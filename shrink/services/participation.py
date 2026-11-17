@@ -17,7 +17,7 @@ class Participation:
         self.state = state
         self.last_bot_reply_to = last_bot_reply_to
         self.interest = interest
-        self.spontaneous = defaultdict(deque)
+        self.spontaneous = defaultdict(dict)
         self.other_conversations = {}
         self.bot_replies = defaultdict(deque)
 
@@ -33,15 +33,26 @@ class Participation:
 
     def permit_spontaneous(self, source, random_value, boost=1.0):
         settings = self.state.settings
-        now = time.time()
-        queue = self.spontaneous[source]
-        while queue and queue[0] < now - 300:
-            queue.popleft()
         probability = min(1.0, settings.spontaneous_probability * boost)
-        if len(queue) >= settings.spontaneous_limit or random_value >= probability:
+        return self.spontaneous_available(source) and random_value < probability
+
+    def spontaneous_available(self, source):
+        queue = self.spontaneous[source]
+        for identity, started in list(queue.items()):
+            if started < time.time() - 300:
+                queue.pop(identity, None)
+        return len(queue) < self.state.settings.spontaneous_limit
+
+    def claim_spontaneous(self, source, identity):
+        if identity in self.spontaneous[source]:
+            return True
+        if not self.spontaneous_available(source):
             return False
-        queue.append(now)
+        self.spontaneous[source][identity] = time.time()
         return True
+
+    def release_spontaneous(self, source, identity):
+        self.spontaneous[source].pop(identity, None)
 
     def _bot_budget(self, source):
         now = time.time()

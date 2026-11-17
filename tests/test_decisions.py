@@ -8,7 +8,10 @@ import pytest
 from shrink.persistence.tasks import Tasks
 from shrink.services.decisions import DecisionContext, capabilities, guidance
 from shrink.services.task_states import TaskStates
-from tests.test_continuous_history import app, receive  # noqa: F401
+from tests import test_continuous_history
+from tests.test_continuous_history import receive
+
+app = test_continuous_history.app
 
 
 def answer(event, **updates):
@@ -79,6 +82,8 @@ async def test_format_normalization_keeps_model_decision_and_persists_known_refe
     (DecisionContext(private=True), "reply"),
     (DecisionContext(direct=True), "reply"),
     (DecisionContext(), "silent"),
+    (DecisionContext(participation="spontaneous"), "reply"),
+    (DecisionContext(participation="engaged"), "reply"),
 ])
 async def test_d02_timeout_and_format_fallback_keep_input_and_same_retry_identity(app, mode, context, route):
     event, _ = receive(app, text="帮我看看这个")
@@ -98,6 +103,26 @@ async def test_d02_timeout_and_format_fallback_keep_input_and_same_retry_identit
     assert not retry["fallback"]
     assert {r["input_id"] for r in app.decisions.repository.list()} == {event["id"]}
     assert len(app.database.rows("SELECT * FROM input_events")) == 1
+
+
+async def test_classifier_receives_bounded_current_conversation_and_participation(app):
+    session = "bot:GroupMessage:1"
+    old, _ = receive(app, "withdrawn", "撤回原文")
+    app.history.revise(session, old["message_id"], sender="qq:100", identity="remove")
+    receive(app, "other-instance", "跨实例不能看到", session="other:GroupMessage:1")
+    for i in range(9):
+        receive(app, f"prior{i}", "讨论内容" * 100, sender="200")
+    app.history.tool_start(session, "call", "tool", {})
+    app.history.tool_end(session, "call", "无关工具回执")
+    event, _ = receive(app, "current", "好的")
+    model = backend(app, answer(event))
+    await app.decisions.decide(event["id"], DecisionContext(participation="engaged"))
+    payload = model.call_args.args[0]
+    assert payload["rules"]["participation"] == "engaged"
+    assert len(payload["recent_chat"]) == 6
+    assert all(len(r["text"]) <= 240 for r in payload["recent_chat"])
+    assert all(r["speaker"] == "qq:200" for r in payload["recent_chat"])
+    assert not any(t in str(payload["recent_chat"]) for t in ("撤回原文", "跨实例", "无关工具", "好的"))
 
 
 async def test_stop_priority_and_ambiguous_target_only_asks(app):

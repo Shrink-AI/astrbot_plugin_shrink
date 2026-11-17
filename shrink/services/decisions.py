@@ -204,7 +204,7 @@ class Decisions:
         if context.participation == "quiet" and not (context.direct or context.private):
             return decision, "participation_budget"
         if re.fullmatch(r"\s*(?:你好|您好|在吗|谢谢|好的|收到|hi|hello)[？?！!。，, ]*", text, re.I):
-            if not self.state.settings.decision_enabled and context.participation in {"engaged", "spontaneous"}:
+            if context.participation in {"engaged", "spontaneous"}:
                 return None, ""
             return decision, "simple_chat"
         return None, ""
@@ -237,7 +237,9 @@ class Decisions:
                                  "source": event["source"], "text": (event["text"] or "")[:4000],
                                  "text_truncated": len(event["text"] or "") > 4000},
                        "candidates": candidates,
+                       "recent_chat": self.repository.recent_chat(event["session"], event["message_id"]),
                        "rules": {"direct": context.direct, "private": context.private,
+                                 "participation": context.participation,
                                  "may_create_task": context.admin, "fixed_task": context.fixed_task}}
             try:
                 if backend is None:
@@ -253,6 +255,8 @@ class Decisions:
                     identity, event["session"], backend_name, type(exc).__name__,
                     self.state.settings.decision_timeout)
                 decision = self.base(event, context, candidates)
+                if context.participation in {"engaged", "spontaneous"}:
+                    decision.route, decision.notify = "reply", "normal"
                 if is_task_followup(event["text"]):
                     decision.intent = "supplement"
         limit = self.state.settings.decision_capability_limit

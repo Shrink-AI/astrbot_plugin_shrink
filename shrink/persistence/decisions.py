@@ -23,6 +23,19 @@ class DecisionRepository:
             "SELECT id,request,status FROM operation_tasks WHERE session=? AND sender=? "
             "ORDER BY started DESC LIMIT 24", (session, sender))
 
+    def recent_chat(self, session, message_id):
+        rows = self.db.rows(
+            "SELECT e.message_id,e.speaker,m.text,m.has_image FROM conversation_events e "
+            "JOIN messages m ON m.id=e.message_id "
+            "WHERE e.session=? AND e.role IN ('user','assistant') AND e.kind='message' "
+            "AND e.id<(SELECT MIN(id) FROM conversation_events WHERE session=? AND message_id=?) "
+            "AND m.created>=? AND NOT EXISTS(SELECT 1 FROM conversation_events r "
+            "WHERE r.session=e.session AND r.target=e.message_id AND r.kind IN ('corrected','retracted')) "
+            "ORDER BY e.id DESC LIMIT 6", (session, session, message_id, time.time() - 600))
+        return [{"message_id": r["message_id"], "speaker": r["speaker"],
+                 "text": (r["text"] or "")[:240], "has_image": bool(r["has_image"])}
+                for r in reversed(rows)]
+
     def binding(self, identity):
         if not self.db.rows("SELECT name FROM sqlite_master WHERE name='task_inputs'"):
             return []

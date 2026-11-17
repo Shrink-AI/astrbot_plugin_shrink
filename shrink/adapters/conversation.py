@@ -946,6 +946,12 @@ class ConversationAdapter:
         original = event.send
 
         async def send(chain):
+            turn = event.get_extra("shrink_turn")
+            spontaneous = turn is not None and turn.reason == "spontaneous"
+            if spontaneous and not self.app.participation.claim_spontaneous(turn.source, turn.id):
+                event.set_extra("shrink_participation_limited", True)
+                self.outcome(event, "participation_budget")
+                return False
             box = getattr(self.app, 'notification_outbox', None)
             fact = event.get_extra('shrink_reported_fact')
             text = ''.join(c.text for c in chain.chain if isinstance(c, Plain))
@@ -956,6 +962,8 @@ class ConversationAdapter:
                     {'session': event.unified_msg_origin, 'sender': str(event.get_sender_id())},
                     event.get_extra('shrink_reported_task'), turn.id + ':reply', fact, text)
                 if identity is None:
+                    if spontaneous and not event.get_extra("shrink_spontaneous_accepted"):
+                        self.app.participation.release_spontaneous(turn.source, turn.id)
                     return False
             accepted = False
             previous = getattr(event, "_has_send_oper", None)
@@ -963,6 +971,8 @@ class ConversationAdapter:
                 event._has_send_oper = False
             try:
                 result = await original(chain)
+                if result is False and spontaneous and not event.get_extra("shrink_spontaneous_accepted"):
+                    self.app.participation.release_spontaneous(turn.source, turn.id)
                 accepted = result is not False and (previous is None or event._has_send_oper)
             finally:
                 if identity:
@@ -972,6 +982,8 @@ class ConversationAdapter:
                 if previous is not None:
                     event._has_send_oper = previous or event._has_send_oper
             if accepted:
+                if spontaneous:
+                    event.set_extra("shrink_spontaneous_accepted", True)
                 accepted = event.get_extra("shrink_accepted_texts", [])
                 accepted.append("".join(c.text for c in chain.chain if isinstance(c, Plain)))
                 event.set_extra("shrink_accepted_texts", accepted)
@@ -1014,6 +1026,11 @@ class ConversationAdapter:
 
     async def sent(self, event):
         if not event.get_extra("shrink_reply") or event.get_extra("shrink_sent"):
+            return
+        if event.get_extra("shrink_participation_limited"):
+            self.close_trace(event, "participation_budget")
+            self.release(event)
+            self.app.inbox.repository.complete(event.get_extra("shrink_input_ids") or [], route="chat")
             return
         text = event.get_extra("shrink_text", "")
         if getattr(self.app, "history", None) and text not in event.get_extra("shrink_accepted_texts", []):
@@ -1084,6 +1101,8 @@ class ConversationAdapter:
         if not path:
             return
         try:
+            if turn.reason == "spontaneous":
+                self.watch_delivery(event)
             image = Image.fromFileSystem(str(path))
             component = image
             if event.get_platform_name() == "aiocqhttp":

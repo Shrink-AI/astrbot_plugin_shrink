@@ -183,7 +183,13 @@ def test_participation_limit(store):
     assert not service.participation.permit_spontaneous("A", 0.07)
     assert service.participation.permit_spontaneous("A", 0.01)
     assert service.participation.permit_spontaneous("A", 0.01)
+    assert service.participation.claim_spontaneous("A", "first")
+    assert service.participation.claim_spontaneous("A", "first")
+    assert service.participation.claim_spontaneous("A", "second")
     assert not service.participation.permit_spontaneous("A", 0.01)
+    assert not service.participation.claim_spontaneous("A", "third")
+    service.participation.release_spontaneous("A", "second")
+    assert service.participation.permit_spontaneous("A", 0.01)
     assert service.participation.permit_spontaneous("B", 0.01)
     assert service.participation.permit_spontaneous("C", 0.1, boost=2.0)
 
