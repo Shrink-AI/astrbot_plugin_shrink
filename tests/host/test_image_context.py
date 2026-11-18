@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image as PILImage
 
 pytest.importorskip("astrbot.core.provider.manager")
 
@@ -33,6 +34,28 @@ from shrink.adapters.task_runner import task_runner  # noqa: E402
 def image_count(messages):
     return sum(p.get("type") == "image_url" for m in messages
                if isinstance(m.get("content"), list) for p in m["content"])
+
+
+async def test_oversized_history_image_does_not_block_spontaneous_reply(tmp_path, monkeypatch):
+    world = World(tmp_path / "data")
+    try:
+        event = Event(world, "今天聊点新鲜的")
+        event.is_at_or_wake_command = False
+        world.app.state.put("settings", {**world.app.state.settings.model_dump(),
+                                         "decision_enabled": False, "spontaneous_probability": 1})
+        await picture(world.app, session=event.unified_msg_origin, colors=("red",))
+        monkeypatch.setattr(PILImage, "MAX_IMAGE_PIXELS", 90)
+
+        await world.turn(event)
+
+        assert not world.hook_errors
+        assert world.calls and world.sent
+        assert "图片像素超过安全上限" in str(world.requests[0]["contexts"])
+        assert image_count(world.requests[0]["contexts"]) == 0
+        trace = world.traces()[event.message_obj.message_id]
+        assert (trace["reason"], trace["outcome"]) == ("spontaneous", "sent")
+    finally:
+        await world.app.close()
 
 
 @pytest.mark.parametrize("protocol", [

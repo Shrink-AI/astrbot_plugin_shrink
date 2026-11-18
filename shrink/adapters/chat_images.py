@@ -4,6 +4,7 @@ import copy
 import io
 import json
 import logging
+import warnings
 
 from ..services.attachments import Attachments
 
@@ -52,8 +53,13 @@ class ChatImages:
         _, path = self.attachments.file(identity)
         data = await self.attachments.app.scheduling.compute(path.read_bytes)
         from PIL import Image
-        with Image.open(io.BytesIO(data)) as picture:
-            mime = Image.MIME.get(picture.format)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(data)) as picture:
+                    mime = Image.MIME.get(picture.format)
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
+            raise ValueError("图片像素超过安全上限") from exc
         if not mime:
             raise ValueError("图片格式不受支持")
         return data, mime

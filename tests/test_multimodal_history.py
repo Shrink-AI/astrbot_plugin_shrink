@@ -114,6 +114,30 @@ async def test_scope_revocation_missing_and_unsupported_are_explicit(image_app):
     assert "image_url" not in str(await app.history.contexts(SESSION, 10000))
 
 
+@pytest.mark.parametrize("pixel_limit", [90, 40])
+async def test_oversized_image_keeps_reference_and_other_content(image_app, monkeypatch, pixel_limit):
+    app = image_app
+    turn, _ = await picture(app)
+    oversized, normal = app.attachments.for_message(turn.id)
+    _, normal_path = app.attachments.file(normal["id"])
+    normal_bytes = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(normal_bytes, format="PNG")
+    normal_path.write_bytes(normal_bytes.getvalue())
+    contexts = await app.history.contexts(SESSION, 10000)
+    monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", pixel_limit)
+
+    resolver = ChatImages(app.attachments, SESSION)
+    resolved = await resolver.resolve(contexts)
+    parts = resolved[0]["content"]
+    assert "看第一张" in [part.get("text") for part in parts]
+    assert f"图片像素超过安全上限；原图引用 attachment:{oversized['id']}" in str(parts)
+    assert [part["image_url"]["id"] for part in parts if part["type"] == "image_url"] == [
+        "attachment:" + normal["id"]
+    ]
+    assert resolver.counts["failed"] == resolver.counts["loaded"] == 1
+    assert resolver.compact(resolved) == contexts
+
+
 async def test_pending_wait_does_not_cancel_or_duplicate_download(image_app):
     app = image_app
     row, _ = receive(app, "pending", text="")
