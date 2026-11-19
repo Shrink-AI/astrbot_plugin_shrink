@@ -82,8 +82,8 @@ async def test_format_normalization_keeps_model_decision_and_persists_known_refe
     (DecisionContext(private=True), "reply"),
     (DecisionContext(direct=True), "reply"),
     (DecisionContext(), "silent"),
-    (DecisionContext(participation="spontaneous"), "reply"),
-    (DecisionContext(participation="engaged"), "reply"),
+    (DecisionContext(participation="spontaneous"), "silent"),
+    (DecisionContext(participation="engaged"), "silent"),
 ])
 async def test_d02_timeout_and_format_fallback_keep_input_and_same_retry_identity(app, mode, context, route):
     event, _ = receive(app, text="帮我看看这个")

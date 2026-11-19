@@ -106,12 +106,13 @@ class MessageRepository:
             )
         return message_id
 
-    def raw(self, identity, source, text, *, sender, is_bot=False, addressee=""):
+    def raw(self, identity, source, text, *, sender, is_bot=False, addressee="", reason=""):
         with self.database.transaction() as con:
             con.execute("INSERT OR IGNORE INTO messages"
-                        "(id,user_id,source,text,speaker_name,is_bot,learnable,learned,digested,created,addressee) "
-                        "VALUES(?,?,?,?,?,?,0,1,?,?,?)",
-                        (identity, sender, source, text, sender, int(is_bot), int(not is_bot), time.time(), addressee))
+                        "(id,user_id,source,text,speaker_name,is_bot,learnable,learned,digested,created,addressee,quote) "
+                        "VALUES(?,?,?,?,?,?,0,1,?,?,?,?)",
+                        (identity, sender, source, text, sender, int(is_bot), int(not is_bot), time.time(), addressee,
+                         json.dumps({"reason": reason}) if reason else "{}"))
         return identity
 
     def set_addressee(self, message_id, addressee):
@@ -152,10 +153,15 @@ class MessageRepository:
 
     def last_bot_reply_to(self, source, user_id):
         row = self.database.connection.execute(
-            "SELECT MAX(created) FROM messages WHERE source=? AND is_bot=1 AND addressee=?",
+            "SELECT created,user_id,addressee,quote FROM messages WHERE source=? AND user_id!=? "
+            "ORDER BY created DESC,rowid DESC LIMIT 1",
             (source, user_id),
         ).fetchone()
-        return row[0] if row and row[0] else 0
+        if row and row[1] == "self" and row[2] == user_id and json.loads(row[3] or "{}").get("reason") in (
+            "direct", "spontaneous"
+        ):
+            return row[0]
+        return 0
 
     def recent_bot(self, source, limit=5):
         return [

@@ -254,8 +254,6 @@ class Decisions:
                     identity, event["session"], backend_name, type(exc).__name__,
                     self.state.settings.decision_timeout)
                 decision = self.base(event, context, candidates)
-                if context.participation in {"engaged", "spontaneous"}:
-                    decision.route, decision.notify = "reply", "normal"
                 if is_task_followup(event["text"]):
                     decision.intent = "supplement"
         limit = self.state.settings.decision_capability_limit

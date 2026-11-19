@@ -47,7 +47,7 @@ async def test_ambiguous_stop_has_no_execution_tools_or_cancellation(world):
 
 
 @pytest.mark.parametrize("failure", ["invalid", "timeout"])
-async def test_failed_group_classification_reaches_main_and_confirms_send(world, failure):
+async def test_failed_group_classification_leaves_unsolicited_turn_silent(world, failure):
     event = Event(world, "这张图真有意思")
     event.is_at_or_wake_command = False
     world.app.state.put("settings", {**world.app.state.settings.model_dump(),
@@ -59,11 +59,11 @@ async def test_failed_group_classification_reaches_main_and_confirms_send(world,
         world.app.decisions.backends["haiku"].side_effect = stall
     world.app.decisions.backends["haiku"].version = "test-v1"
     await world.turn(event)
-    assert world.calls and world.sent
+    assert not world.calls and not world.sent
     pending = world.app.inbox.repository.pending("chat")
     assert not pending
     assert world.app.decisions.repository.list()[0]["fallback"]
-    assert world.app.turn_traces.since()[0]["reason"] == "spontaneous"
+    assert world.app.decisions.repository.list()[0]["decision"]["route"] == "silent"
 
 
 async def test_silent_candidates_leave_budget_for_natural_chime_in(world):

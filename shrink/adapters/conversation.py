@@ -336,7 +336,7 @@ class ConversationAdapter:
         else:
             self.close_trace(event, "silent")
             logger.debug(f"Shrink silent: {turn.reason} source={source}")
-            if not decision["fallback"]:
+            if not decision["fallback"] or reason in {"engaged", "spontaneous"}:
                 app.inbox.repository.complete([saved["id"]], route="chat")
             event.call_llm = True
 

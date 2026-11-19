@@ -218,13 +218,27 @@ def test_addressing_uses_known_nicknames(world):
 
 
 def test_engaged_conversation_continues_without_mention(world):
-    world.messages.record_bot(G, "跑通就好", addressee=PERSON_A)
+    world.messages.record_bot(G, "跑通就好", addressee=PERSON_A, reason="direct")
     reason = world.participation.decide(turn(world, "主要是缓存太大", uid=PERSON_A), 0.99)
     assert reason == "engaged"
     assert world.participation.decide(turn(world, "主要是缓存太大", uid=FAN), 0.99) == "quiet"
     # Turning to someone else ends the engagement until 石英 is addressed again.
     assert world.participation.decide(turn(world, "你看", uid=PERSON_A, addressee=FAN), 0.99) == "addressed_other"
     assert world.participation.decide(turn(world, "对吧", uid=PERSON_A), 0.99) == "other_conversation_followup"
+
+
+def test_followup_cannot_renew_itself_or_cross_an_interruption(world):
+    def reason():
+        return world.participation.decide(turn(world, "再说一句", uid=PERSON_A), 0.99)
+
+    world.history.sent(G, G, "哪一关", PERSON_A, "spontaneous", identity="first")
+    assert reason() == "engaged"
+    world.history.sent(G, G, "我也选左边", PERSON_A, "engaged", identity="followup")
+    assert reason() == "quiet"
+    world.history.sent(G, G, "你叫我？", PERSON_A, "direct", identity="new")
+    assert reason() == "engaged"
+    say(world, "intervening", FAN, "聊个别的", ago=0)
+    assert reason() == "quiet"
 
 
 # ---- digest and data gates -----------------------------------------------------------------------

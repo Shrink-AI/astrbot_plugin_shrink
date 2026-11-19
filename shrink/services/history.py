@@ -27,7 +27,7 @@ class ConversationHistory:
     def sent(self, session, source, text, sender="", reason="", *, identity):
         message_id = "sent:" + identity
         with self.repository.db.transaction():
-            self.messages.raw(message_id, source, text, sender="self", is_bot=True, addressee=sender)
+            self.messages.raw(message_id, source, text, sender="self", is_bot=True, addressee=sender, reason=reason)
             self.repository.append(session, "message:" + message_id, "assistant", message_id, speaker="self")
         return message_id
 
