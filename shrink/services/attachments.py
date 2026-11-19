@@ -123,13 +123,15 @@ class Attachments:
 
     def authorize(self, identity, session):
         row = self.get(identity)
-        matches = self.db.rows("SELECT 1 FROM conversation_events WHERE session=? AND message_id=?",
+        matches = self.db.rows("SELECT COALESCE(m.created,e.created) AS message_created "
+                               "FROM conversation_events e LEFT JOIN messages m ON m.id=e.message_id "
+                               "WHERE e.session=? AND e.message_id=? ORDER BY e.id LIMIT 1",
                                (session, row["message_id"]))
         if not matches:
             raise ValueError("图片不属于当前会话")
         if self.app.history.repository.revised(row["message_id"]):
             raise ValueError("原图片消息已撤回或纠正")
-        return row
+        return {**row, "message_created": matches[0]["message_created"]}
 
     def message_images(self, message_id, session):
         messages = self.db.rows("SELECT session FROM conversation_events WHERE message_id=?", (message_id,))

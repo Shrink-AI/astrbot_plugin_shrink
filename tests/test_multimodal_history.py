@@ -2,14 +2,15 @@ import asyncio
 import base64
 import io
 import json
+import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
 
 from shrink.application import Application
-from shrink.adapters.chat_images import ChatImages
+from shrink.adapters.chat_images import ChatImages, IMAGE_ENVELOPE_BYTES, RECENT_IMAGE_SECONDS
 from shrink.services.history import ConversationHistory
 from tests.test_continuous_history import receive
 
@@ -93,6 +94,68 @@ async def test_image_budget_and_compression_keep_references_without_bytes(image_
     view = ConversationHistory.compression_view(value)
     assert "attachment:" in str(view) and "未解读" in str(view)
     assert "data:image/" not in prompt and "attachment:" in prompt
+
+
+async def test_old_images_stay_as_references_unless_explicit(image_app):
+    app = image_app
+    old, _ = await picture(app, "old", colors=("red",))
+    recent, _ = await picture(app, "recent", colors=("blue",))
+    with app.database.transaction() as con:
+        con.execute("UPDATE messages SET created=? WHERE id=?", (time.time() - RECENT_IMAGE_SECONDS - 60, old.id))
+    old_ref, recent_ref = ["attachment:" + app.attachments.for_message(turn.id)[0]["id"]
+                           for turn in (old, recent)]
+    contexts = await app.history.contexts(SESSION, 10000)
+    resolver = ChatImages(app.attachments, SESSION)
+    resolver.payload = AsyncMock(wraps=resolver.payload)
+    resolved = await resolver.resolve(contexts)
+    assert "较早图片未自动加载；原图引用 " + old_ref in str(resolved[0])
+    assert resolved[1]["content"][2]["image_url"]["id"] == recent_ref
+    assert [call.args[0] for call in resolver.payload.await_args_list] == [recent_ref]
+    assert resolver.compact(resolved) == contexts
+    resolved = await resolver.resolve(contexts, priority_refs=[old_ref])
+    assert resolved[0]["content"][2]["image_url"]["id"] == old_ref
+
+
+async def test_budget_prioritizes_current_and_skips_large_file_before_read(image_app, monkeypatch):
+    app = image_app
+    large, _ = await picture(app, "large", colors=("red",))
+    current, _ = await picture(app, "current", colors=("blue",))
+    large_row, current_row = [app.attachments.for_message(turn.id)[0] for turn in (large, current)]
+    _, large_path = app.attachments.file(large_row["id"])
+    with large_path.open("ab") as stream:
+        stream.truncate(2048)
+    open_path = type(large_path).open
+    blocked_read = Mock(side_effect=AssertionError("超预算文件不能读取"))
+
+    def open_guard(path, *args, **kwargs):
+        stream = open_path(path, *args, **kwargs)
+        if path == large_path:
+            stream.read = blocked_read
+        return stream
+
+    monkeypatch.setattr(type(large_path), "open", open_guard)
+    resolver = ChatImages(app.attachments, SESSION, byte_budget=600)
+    contexts = await app.history.contexts(SESSION, 10000)
+    resolved = await resolver.resolve(contexts, priority_refs=["attachment:" + current_row["id"]])
+    blocked_read.assert_not_called()
+    assert "超过本轮加载预算" in str(resolved[0])
+    assert resolved[1]["content"][2]["image_url"]["id"] == "attachment:" + current_row["id"]
+    assert resolver.counts["over_budget"] == resolver.counts["loaded"] == 1
+    assert resolver.compact(resolved) == contexts
+
+
+async def test_repeated_image_occurrences_each_consume_budget(image_app):
+    app = image_app
+    original, _ = await picture(app, colors=("red",))
+    ref = "attachment:" + app.attachments.for_message(original.id)[0]["id"]
+    size = len(png())
+    cost = 4 * ((size + 2) // 3) + IMAGE_ENVELOPE_BYTES
+    resolver = ChatImages(app.attachments, SESSION, byte_budget=cost)
+    message = {"role": "user", "content": [{"type": "image_url", "image_url": {"url": ref}}]}
+    resolved = await resolver.resolve([message, message])
+    assert resolver.counts["loaded"] == resolver.counts["over_budget"] == 1
+    assert resolver.used_bytes == cost
+    assert resolver.compact(resolved) == [message, message]
 
 
 async def test_scope_revocation_missing_and_unsupported_are_explicit(image_app):

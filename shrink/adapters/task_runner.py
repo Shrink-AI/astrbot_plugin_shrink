@@ -43,7 +43,8 @@ def task_runner(inputs, task_id):
             images = getattr(self, "images", None)
             if images:
                 restored = await images.resolve(images.compact(self.run_context.messages),
-                                                modalities=self.provider.provider_config.get("modalities"))
+                                                modalities=self.provider.provider_config.get("modalities"),
+                                                max_age=None)
                 self.run_context.messages[:] = [Message.model_validate(m) for m in restored]
             responded = False
             async for response in super().step():

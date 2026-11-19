@@ -37,6 +37,44 @@ def grant(app, scope=""):
     return identity
 
 
+def named_account(app, account, name, instance="bot"):
+    address(app, account, instance)
+    app.messages.ingest({"id": f"register:{instance}:{account}", "user_id": f"qq:{account}",
+                         "source": f"qq:private:{account}", "account": account, "name": name})
+
+
+def test_spoken_grant_uses_known_nickname_but_does_not_send_before_confirmation(app):
+    named_account(app, SECOND, "咸鱼")
+    named_account(app, OTHER, "另一条鱼", instance="another")
+    text = "与鱼授权双向全部记忆"
+    preview = command(app, FIRST, text)
+    assert f"咸鱼（QQ {SECOND}）" in preview and "整理记忆" in preview
+    assert "不用再发邀请" in preview
+    assert not app.notification_outbox.repository.list()
+    identity = preview.split()[-1]
+    assert command(app, FIRST, text) == preview
+    assert "不能由你" in command(app, SECOND, f"接受互授权 {identity}")
+    assert "不能由你" in command(app, SECOND, f"确认互授权 {identity}")
+    assert "不用再发一次" in command(app, FIRST, f"确认互授权 {identity}")
+    assert command(app, SECOND, f"接受互授权 {identity}") == ""
+    assert app.database.rows("SELECT recipient,kind,state FROM private_memory_consent") == [
+        {"recipient": SECOND, "kind": "grant_memory", "state": "active"}]
+
+
+def test_spoken_grant_asks_to_disambiguate_and_never_uses_other_private_nicknames(app):
+    named_account(app, SECOND, "咸鱼")
+    named_account(app, OTHER, "另一条鱼")
+    app.people_repository.add_nickname(f"qq:{SECOND}", "旧称", scope=f"qq:private:{OTHER}")
+    assert "不止一个人" in command(app, FIRST, "与鱼授权双向全部记忆")
+    assert "没认出" in command(app, FIRST, "和旧称互查全部记忆")
+    assert command(app, FIRST, "和咸鱼互查全部记忆", session="bot:GroupMessage:55") is None
+    assert not app.database.rows("SELECT id FROM private_memory_consent")
+    preview = command(app, FIRST, "我要和咸鱼共享与你的私聊记忆")
+    assert f"咸鱼（QQ {SECOND}）" in preview and "整理记忆" not in preview
+    preview = command(app, FIRST, f"我要把全部私聊记忆共享给QQ {SECOND}")
+    assert f"QQ {SECOND}" in preview and "整理记忆" in preview
+
+
 async def test_share_confirmation_targets_only_one_account_and_stays_out_of_history(app, host_modules):
     address(app, SECOND)
     address(app, OTHER)

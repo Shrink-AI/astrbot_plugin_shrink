@@ -2,6 +2,7 @@
 import copy
 import base64
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,7 +11,7 @@ from PIL import Image as PILImage
 
 pytest.importorskip("astrbot.core.provider.manager")
 
-from astrbot.api.message_components import Image, Plain  # noqa: E402
+from astrbot.api.message_components import At, Image, Plain, Reply  # noqa: E402
 from astrbot.core.agent.hooks import BaseAgentRunHooks  # noqa: E402
 from astrbot.core.agent.run_context import ContextWrapper  # noqa: E402
 from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner  # noqa: E402
@@ -18,7 +19,9 @@ from astrbot.core.agent.tool import ToolSet  # noqa: E402
 from astrbot.core.agent.tool_executor import BaseFunctionToolExecutor  # noqa: E402
 from astrbot.core.provider.entities import LLMResponse, ProviderRequest  # noqa: E402
 
-from shrink.adapters.chat_images import ChatImages, receipt_refs, selected_refs  # noqa: E402
+from shrink.adapters.chat_images import (  # noqa: E402
+    ChatImages, IMAGE_ENVELOPE_BYTES, RECENT_IMAGE_SECONDS, receipt_refs, selected_refs,
+)
 from shrink.application import Application  # noqa: E402
 from shrink.persistence.execution_context import ExecutionContext  # noqa: E402
 from shrink.persistence.task_inputs import TaskInputsRepository  # noqa: E402
@@ -125,6 +128,46 @@ async def test_foreground_current_image_once_then_visible_next_turn(tmp_path):
         await world.app.close()
 
 
+async def test_foreground_keeps_recent_images_and_reads_old_image_when_quoted(tmp_path):
+    world = World(tmp_path / "chat")
+    try:
+        event = Event(world, "刚刚那张图呢")
+        session = event.unified_msg_origin
+        old, _ = await picture(world.app, "old-picture", session=session, colors=("red",))
+        await picture(world.app, "recent-picture", session=session, colors=("blue",))
+        with world.app.database.transaction() as con:
+            con.execute("UPDATE messages SET created=? WHERE id=?",
+                        (time.time() - RECENT_IMAGE_SECONDS - 60, old.id))
+        await world.turn(event)
+        contexts = world.requests[-1]["contexts"]
+        assert image_count(contexts) == 1 and "较早图片未自动加载" in str(contexts)
+
+        quoted = Event(world, "我问的是这张旧图")
+        quoted.message_obj.message.insert(0, Reply(id="old-picture", sender_id="100"))
+        quoted.message_obj.message.append(At(qq=str(quoted.get_self_id())))
+        await world.turn(quoted)
+        contexts = world.requests[-1]["contexts"]
+        assert image_count(contexts) == 2 and "较早图片未自动加载" not in str(contexts)
+        assert not world.hook_errors
+    finally:
+        await world.app.close()
+
+
+async def test_explicit_old_image_reads_share_the_existing_byte_budget(tmp_path):
+    app = Application(tmp_path / "chat", AsyncMock(), AsyncMock(), AsyncMock())
+    try:
+        turn, _ = await picture(app, colors=("red",))
+        with app.database.transaction() as con:
+            con.execute("UPDATE messages SET created=1 WHERE id=?", (turn.id,))
+        cost = 4 * ((len(png()) + 2) // 3) + IMAGE_ENVELOPE_BYTES
+        images = ChatImages(app.attachments, SESSION, byte_budget=cost)
+        first, second = await images.read(turn.id, 0), await images.read(turn.id, 0)
+        assert not first.isError and receipt_refs(first)
+        assert second.isError and "超过本轮加载预算" in second.content[0].text
+    finally:
+        await app.close()
+
+
 async def test_history_tool_image_reaches_next_real_runner_call_and_durable_receipt(tmp_path):
     app = Application(tmp_path / "chat", AsyncMock(), AsyncMock(), AsyncMock())
     try:
@@ -186,6 +229,8 @@ async def test_task_runner_checkpoints_and_rehydrates_original_images(tmp_path):
     app = Application(tmp_path / "chat", AsyncMock(), AsyncMock(), AsyncMock())
     try:
         original, _ = await picture(app, colors=("red",))
+        with app.database.transaction() as con:
+            con.execute("UPDATE messages SET created=1 WHERE id=?", (original.id,))
         TaskInputsRepository(app.database)
         execution = ExecutionContext(app.database)
         async def save(task_id, messages, pending):

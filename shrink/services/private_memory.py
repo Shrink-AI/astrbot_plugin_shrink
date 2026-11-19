@@ -18,7 +18,17 @@ GRANT_REQUEST = re.compile(
     r"|(?:把|将).{0,35}?(?:私聊|记忆).{0,20}?(?:共享|分享)(?:给|给到)"
     r"|(?:开通|开启|申请)?\s*(?:双向授权|互授权))"
 )
+SPOKEN_INVITE = re.compile(
+    r"(?:(?:我想|我要|我需要|我希望|请|帮我|能不能|可以|发起|开通)\s*)*"
+    r"(?:和|跟|与)\s*(?P<peer>[^，。！？!?、\n]{1,35}?)\s*"
+    r"(?:授权双向|双向授权|互授权|共享|分享|互查|互通)\s*"
+    r"(?P<scope>(?:全部|所有|全量)?(?:的)?(?:与你的|和你的|我的|双方的)?"
+    r"(?:私聊(?:历史|原文|文本|记录|记忆)?|记忆))\s*(?:吧|可以吗|行吗)?[。！？!?]?",
+    re.I,
+)
+SPOKEN_ACCOUNT = re.compile(r"(?:QQ\s*[：:]?\s*)?(" + ACCOUNT + r")", re.I)
 QQ_TARGET = re.compile(r"(?<![A-Za-z0-9])QQ\s*[：:]?\s*(" + ACCOUNT + r")(?!\d)", re.I)
+ALL_MEMORY = re.compile(r"(?:全部|所有|全量)(?:的)?(?:私聊)?记忆")
 SEARCH = re.compile(r"查共享(?:\s+(" + ACCOUNT + r"))?(?:\s+(.+))?", re.S)
 PAGE = re.compile(r"(?:^|\s+)第\s*([1-9]\d{0,8})\s*页\s*$")
 NAMED_SEARCH = re.compile(r"(?:你和|关于|查找?|查询)\s*(?:QQ\s*)?(" + ACCOUNT + r")\s*的私聊", re.I)
@@ -30,7 +40,7 @@ SCOPES = {
     "grant": "双方与这个石英实例的私聊原文（含历史）",
     "grant_memory": "双方与这个石英实例的私聊原文（含历史）及有同一私聊来源的有效整理记忆",
 }
-INVITE_HELP = "请发「私聊互授权 对方QQ号 全部记忆」；只互查私聊原文就省略「全部记忆」。双方确认后才生效。"
+INVITE_HELP = "你想和谁互查？告诉我对方的称呼或 QQ 号，比如「和某某互查全部记忆」。我会先请你核对范围。"
 SEARCH_HELP = "用法：查共享 [QQ号] [关键词] [第N页]。不写关键词可浏览已共享的记录。"
 
 
@@ -63,6 +73,37 @@ class PrivateMemory:
             (instance, account, "qq:private:" + account, f"{instance}:FriendMessage:{account}"))
         return {"session": rows[0]["id"], "sender": account} if rows else None
 
+    def invite_target(self, instance, owner, name):
+        if match := SPOKEN_ACCOUNT.fullmatch(name):
+            return match[1], ""
+        rows = self.db.rows("""
+            WITH roster AS (
+                SELECT p.id,p.account,p.name,p.aliases FROM people p
+                JOIN conversation_sessions s ON s.id=:instance || ':FriendMessage:' || p.account
+                WHERE p.platform='qq' AND p.id='qq:' || p.account AND s.instance=:instance
+                      AND s.platform='qq' AND s.kind='private' AND s.external_id=p.account
+                      AND s.source='qq:private:' || p.account
+            ), names AS (
+                SELECT account,name,name AS alias FROM roster
+                UNION ALL
+                SELECT account,name,a.value FROM roster, json_each(
+                    CASE WHEN json_valid(aliases) THEN aliases ELSE '[]' END
+                ) a WHERE a.type='text'
+                UNION ALL
+                SELECT r.account,r.name,n.name FROM roster r JOIN nicknames n ON n.user_id=r.id
+                WHERE n.status='active' AND n.scope IN ('',:scope)
+            )
+            SELECT account,name,max(CASE WHEN alias=:name COLLATE NOCASE THEN 2 ELSE 1 END) AS rank
+            FROM names WHERE alias=:name COLLATE NOCASE OR (:short AND substr(alias,-1)=:name)
+            GROUP BY account,name ORDER BY rank DESC,account LIMIT 2
+            """, dict(instance=instance, scope=f"qq:private:{owner}", name=name,
+                      short=bool(re.fullmatch(r"[\u4e00-\u9fff]", name))))
+        if not rows:
+            return "", "我没认出这个称呼。请在邀请里写上对方的 QQ 号；我还没发邀请。"
+        if len(rows) > 1 and rows[0]["rank"] == rows[1]["rank"]:
+            return "", "这个称呼可能指不止一个人。请写上对方的 QQ 号；我还没发邀请。"
+        return rows[0]["account"], " ".join(rows[0]["name"].split())[:60]
+
     def handle(self, instance, owner, session, text, input_identity):
         if not instance or not re.fullmatch(ACCOUNT, owner) or session != f"{instance}:FriendMessage:{owner}":
             return None
@@ -73,6 +114,13 @@ class PrivateMemory:
         if match := INVITE.fullmatch(text):
             kind = "grant_memory" if match[2] else "grant"
             return self.propose(instance, owner, match[1], kind, "", input_identity)
+        if match := SPOKEN_INVITE.fullmatch(text):
+            peer, label = self.invite_target(instance, owner, match["peer"])
+            if not peer:
+                return label
+            scope = match["scope"]
+            kind = "grant_memory" if "记忆" in scope and scope.startswith(("全部", "所有", "全量")) else "grant"
+            return self.propose(instance, owner, peer, kind, "", input_identity, label=label)
         if match := CONFIRMATION.fullmatch(text):
             return self.transition(instance, owner, match[2], match[1])
         if match := SEARCH.fullmatch(text):
@@ -85,9 +133,8 @@ class PrivateMemory:
         if GRANT_REQUEST.search(text) or text in {"双向授权", "互授权"}:
             targets = set(QQ_TARGET.findall(text))
             if len(targets) == 1:
-                scope = ("grant_memory" if re.search(r"(?:全部|所有|全量)(?:的)?(?:私聊)?记忆", text)
-                         else "grant")
-                return self.propose(instance, owner, targets.pop(), scope, "", input_identity)
+                kind = "grant_memory" if ALL_MEMORY.search(text) else "grant"
+                return self.propose(instance, owner, targets.pop(), kind, "", input_identity)
             return INVITE_HELP
         if match := NAMED_SEARCH.search(text):
             query = (text[:match.start()] + " " + text[match.end():]).strip(" ：:，,？?。")
@@ -100,7 +147,7 @@ class PrivateMemory:
             return self.search(instance, owner, text)
         return None
 
-    def propose(self, instance, sender, recipient, kind, text, input_identity):
+    def propose(self, instance, sender, recipient, kind, text, input_identity, *, label=""):
         if recipient == sender or not self.address(instance, recipient):
             return "目标 QQ 不可用。请核对账号，并请对方先在这个石英实例发一条私聊。"
         if kind == "share" and not 0 < len(text) <= 1000:
@@ -112,8 +159,10 @@ class PrivateMemory:
                         (identity, instance, sender, recipient, kind, text, now + CONFIRM_SECONDS, now))
         if kind == "share":
             return f"将只向 QQ {recipient} 转告以下内容：\n{text}\n\n如无误，10 分钟内回复：确认转告 {identity}"
-        return (f"邀请 QQ {recipient} 互查{SCOPES[kind]}。仅在各自与我的私聊中可查。"
-                f"对方也接受后才会开放，任一方可撤销。\n10 分钟内回复：确认互授权 {identity}")
+        target = f"{label}（QQ {recipient}）" if label else f"QQ {recipient}"
+        return (f"你是要和 {target} 互查{SCOPES[kind]}吗？仅在各自与我的私聊中可查。"
+                f"\n你确认后我再邀请对方，对方只需接受，不用再发邀请。"
+                f"\n10 分钟内回复：确认互授权 {identity}")
 
     def notice(self, row, account, state):
         scope = self.address(row["instance"], account)
@@ -144,7 +193,7 @@ class PrivateMemory:
                 if exists:
                     return f"该账号已有待确认或已生效的互授权：{exists['id']}。"
                 target, recipients = "pending", (recipient,)
-                response = f"已登记邀请 {identity}，等对方接受后才会开放。"
+                response = f"已登记邀请 {identity}。对方接受这条邀请后就会双向开放，不用再发一次。"
             elif account == recipient and state == "pending" and action in {"接受互授权", "拒绝互授权"}:
                 target = "active" if action == "接受互授权" else "declined"
                 recipients, response = (sender, recipient), ""

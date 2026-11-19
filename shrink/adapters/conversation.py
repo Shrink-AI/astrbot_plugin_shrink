@@ -692,8 +692,10 @@ class ConversationAdapter:
         current_parts = app.attachments.parts_for(current_rows[0]) if current_rows else []
         present = {image_ref(p) for m in req.contexts if isinstance(m.get("content"), list)
                    for p in m["content"] if image_ref(p)}
-        present.update(image_ref(p) for p in current_parts if image_ref(p))
-        quoted = [ref for ref in selected_refs(app, event) if ref not in present]
+        current_refs = [ref for part in current_parts if (ref := image_ref(part))]
+        present.update(current_refs)
+        selected = selected_refs(app, event)
+        quoted = [ref for ref in selected if ref not in present]
         if quoted:
             req.contexts.append({"role": "user", "content": [
                 {"type": "text", "text": "[本轮明确引用的原消息图片]"},
@@ -707,7 +709,8 @@ class ConversationAdapter:
             if not any(p["type"] == "text" for p in current_parts):
                 current_parts = [{"type": "text", "text": current}, *current_parts]
         combined = [*req.contexts, {"role": "user", "content": current_parts}]
-        resolved = await images.resolve(combined, modalities=modalities)
+        resolved = await images.resolve(combined, modalities=modalities,
+                                        priority_refs=[*current_refs, *selected])
         req.contexts = resolved[:-1]
         if current_parts:
             req.extra_user_content_parts.extend(resolved[-1]["content"])
