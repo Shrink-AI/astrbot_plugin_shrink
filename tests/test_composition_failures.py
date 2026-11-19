@@ -77,6 +77,31 @@ async def test_necessary_fallback_uses_only_known_status(app, status, expected):
     assert expected in text and "secret" not in text
 
 
+async def test_background_completion_without_desktop_receipt_cannot_claim_windows_started(app):
+    from shrink.services.task_reporting import execution_report
+    facts = execution_report({"id": "task-123", "request": "在 Windows 本机执行测试",
+                              "status": "completed", "result": "Windows 后台正在跑", "events": []})
+    reply = await app.outbound.compose(facts, kind="task_result")
+    assert "task-123" in reply and "没有收到 Windows 电脑端的启动或完成回执" in reply
+    assert "正在跑" not in reply
+    app.expression.model.assert_not_awaited()
+    finished = await app.expression.finish("后台正在跑", user_text="在 Windows 本机执行测试",
+                                           form="tool_result", reason="direct", recent=[], execution=facts)
+    assert finished.text == reply
+
+
+@pytest.mark.parametrize("execution,expected", [
+    ({"status": "not_sent", "reason": "device_offline"}, "电脑离线"),
+    ({"status": "awaiting_receipt"}, "未收到执行回执"),
+    ({"status": "failed"}, "电脑端回报执行失败"),
+])
+async def test_desktop_task_statuses_use_distinct_fixed_text(app, execution, expected):
+    text = await app.outbound.compose({"task_id": "task-123", "status": "completed",
+                                       "desktop_execution": {**execution, "receipt_id": "command-123"}},
+                                      kind="task_result")
+    assert expected in text and "task-123" in text and "command-123" in text
+
+
 async def test_silence_is_persisted_and_never_sent_or_recorded_as_chat(app):
     event = SimpleNamespace(
         unified_msg_origin="qq:GroupMessage:1", get_sender_id=lambda: "1",

@@ -118,3 +118,33 @@ async def test_n05_real_foreground_send_unknown_blocks_same_background_fact(worl
     assert any(r["state"] == "unknown" and r["kind"] == "foreground" for r in box.repository.list())
     assert states.task(identity)["delivery"] == "unknown"
     assert not [r for r in world.app.history.repository.events(GROUP) if r["role"] == "assistant"]
+
+
+async def test_private_memory_platform_events_keep_granted_evidence_out_of_group_and_history(world):
+    deliveries = install_transport(world)
+
+    def private(text, sender):
+        event = Event(world, text, sender=sender)
+        event.is_private_chat = lambda: True
+        event.get_group_id = lambda: ""
+        event.unified_msg_origin = f"test:FriendMessage:{sender}"
+        return event
+
+    first, second = "100001", "100002"
+    await world.turn(private("这里的验证词是金丝雀密钥", first))
+    await world.turn(private("注册我的收件私聊", second))
+    await world.turn(private(f"/私聊互授权 {second}", first))
+    identity = world.sent[-1].split()[-1]
+    await world.turn(private(f"确认互授权 {identity}", first))
+    await world.app.notification_outbox.pump()
+    assert any(session.endswith(second) and "邀请" in text for session, text in deliveries)
+    await world.turn(private(f"接受互授权 {identity}", second))
+    await world.turn(private("查共享 金丝雀密钥", second))
+    assert "这里的验证词是金丝雀密钥" in world.sent[-1]
+    session = f"test:FriendMessage:{second}"
+    assert not any("金丝雀" in (row["text"] or "") for row in world.app.history.repository.events(session))
+    await world.turn(Event(world, "查共享 金丝雀", sender=second))
+    assert not any("这里的验证词是" in str(request) for request in world.requests[2:])
+    await world.turn(private(f"撤销互授权 {identity}", first))
+    await world.turn(private("查共享 金丝雀", second))
+    assert "没有查到" in world.sent[-1] and not world.hook_errors

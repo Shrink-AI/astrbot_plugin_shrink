@@ -169,7 +169,7 @@ class NotificationOutbox:
         self.inflight.add(identity)
         try:
             if protected:
-                if receipt["state"] == "platform_accepted" and self.record:
+                if receipt["state"] == "platform_accepted" and self.record and row["kind"] != "private_memory":
                     self.record({"session": row["session"], "sender": row["sender"]}, receipt["text"], identity)
                 self.project(row, receipt)
                 return False

@@ -149,7 +149,7 @@ class ToolService:
             if said:
                 parts.append("TA最近在这儿说过：\n" + "\n".join(self._line(r) for r in reversed(said)))
         rendered, rows = await self.memory.recall_for(
-            Query(text=query, source=source, speaker=speaker, mentioned=uids, private=private),
+            Query(text=query, source=source, speaker=speaker, mentioned=uids, private=private, request=request),
             budget=1500, limit=10,
         )
         if rendered:

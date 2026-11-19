@@ -131,6 +131,7 @@ class PluginHost:
             app.start()
             app.tasks.spawn(app.authorizations.recover())
             app.tasks.spawn(app.notification_outbox.run())
+            app.tasks.spawn(app.private_memory.run())
             app.tasks.spawn(self.knowledge.start())
             app.tasks.spawn(self.native_skills.start())
             app.tasks.spawn(self.operations.start())

@@ -1,0 +1,116 @@
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from shrink.adapters.notifications import Notifications
+from shrink.adapters.public_api import PublicAPI
+from tests.test_incident_controls import host_modules  # noqa: F401
+from tests.test_recent import app  # noqa: F401
+
+FIRST, SECOND, OTHER = "100001", "100002", "100003"
+
+
+def address(app, account, instance="bot"):
+    session = f"{instance}:FriendMessage:{account}"
+    app.history.repository.session(session, instance=instance, platform="qq", kind="private",
+                                   external_id=account, source=f"qq:private:{account}")
+    return session
+
+
+def command(app, account, text, instance="bot", session=None):
+    return app.private_memory.handle(instance, account, session or address(app, account, instance),
+                                     text, f"{instance}:{account}:{text}")
+
+
+def history(app, account, text, identity, instance="bot"):
+    source, session = f"qq:private:{account}", address(app, account, instance)
+    app.messages.raw(identity, source, text, sender=f"qq:{account}")
+    app.history.repository.append(session, "message:" + identity, "user", identity)
+
+
+def grant(app):
+    address(app, SECOND)
+    preview = command(app, FIRST, f"私聊互授权 {SECOND}")
+    identity = preview.split()[-1]
+    command(app, FIRST, f"确认互授权 {identity}")
+    return identity
+
+
+async def test_share_confirmation_targets_only_one_account_and_stays_out_of_history(app, host_modules):
+    address(app, SECOND)
+    address(app, OTHER)
+    history(app, FIRST, "金丝雀的地址是原始秘密", "private")
+    sent = []
+    async def send(scope, chain):
+        sent.append((scope, "".join(part.text for part in chain.chain)))
+        return True
+    app.notification_event = lambda session, sender: SimpleNamespace(unified_msg_origin=session,
+        get_sender_id=lambda: sender, get_extra=lambda key: None, send=lambda chain: send(session, chain))
+    Notifications(app)
+    app.outbound.compose = AsyncMock(side_effect=AssertionError("private content went to expression"))
+    outbox = app.notification_outbox
+    preview = command(app, FIRST, f"转告 QQ {SECOND}：金丝雀 改到周五")
+    identity = preview.split()[-1]
+    assert SECOND in preview and "改到周五" in preview
+    assert "没有查到" in command(app, SECOND, "查共享 金丝雀")
+    assert "不能由你" in command(app, SECOND, f"确认转告 {identity}")
+    assert "等待 QQ" in command(app, FIRST, f"确认转告 {identity}")
+    command(app, FIRST, f"确认转告 {identity}")
+    await outbox.pump()
+    await outbox.pump()
+    assert len(sent) == 1 and sent[0][0] == address(app, SECOND) and "改到周五" in sent[0][1]
+    assert not app.history.repository.events(address(app, SECOND))
+    assert "改到周五" in command(app, SECOND, "还记得金丝雀吗")
+    assert "原始秘密" not in command(app, SECOND, "查共享 金丝雀")
+    assert "没有查到" in command(app, OTHER, "查共享 金丝雀")
+    assert command(app, SECOND, "查共享 金丝雀", session="bot:GroupMessage:55") is None
+
+
+def test_grant_requires_both_confirmations_and_revoke_closes_both_directions(app):
+    history(app, FIRST, "历史里的金丝雀", "first")
+    history(app, FIRST, "隔离实例金丝雀", "other-instance", instance="another")
+    history(app, SECOND, "历史里的向日葵", "second")
+    app.history.sent(address(app, FIRST), f"qq:private:{FIRST}", "石英确认金丝雀", f"qq:{FIRST}",
+                     identity="reply")
+    identity = grant(app)
+    assert "没有查到" in command(app, SECOND, "查共享 金丝雀")
+    assert "不能由你" in command(app, FIRST, f"接受互授权 {identity}")
+    assert "没有可操作" in command(app, OTHER, f"接受互授权 {identity}")
+    assert command(app, SECOND, f"接受互授权 {identity}") == ""
+    found = command(app, SECOND, f"查共享 {FIRST} 金丝雀")
+    assert "历史里的金丝雀" in found and "石英确认金丝雀" in found and "隔离实例" not in found
+    assert "历史里的向日葵" in command(app, FIRST, "你还记得向日葵吗")
+    assert "没有查到" in command(app, OTHER, "查共享 金丝雀")
+    assert "没有查到" in command(app, SECOND, "查共享 金丝雀", instance="another")
+    assert command(app, FIRST, f"撤销互授权 {identity}") == ""
+    assert "没有查到" in command(app, SECOND, "查共享 金丝雀")
+    assert "没有查到" in command(app, FIRST, "查共享 向日葵")
+    notices = app.notification_outbox.repository.list()
+    assert {row["sender"] for row in notices if row["facts"]["state"] == "revoked"} == {FIRST, SECOND}
+
+
+def test_declined_and_expired_invites_never_expose_messages(app):
+    history(app, FIRST, "金丝雀", "first")
+    clock = [1000]
+    app.private_memory.clock = lambda: clock[0]
+    identity = grant(app)
+    assert command(app, SECOND, f"拒绝互授权 {identity}") == ""
+    assert "不能由你" in command(app, SECOND, f"接受互授权 {identity}")
+    preview = command(app, FIRST, f"/私聊互授权 {SECOND}")
+    identity = preview.split()[-1]
+    command(app, FIRST, f"确认互授权 {identity}")
+    clock[0] += 601
+    assert "已到期" in command(app, SECOND, f"接受互授权 {identity}")
+    assert "没有查到" in command(app, SECOND, "查共享 金丝雀")
+    notices = app.notification_outbox.repository.list()
+    assert {row["sender"] for row in notices if row["facts"]["state"] == "expired"} == {FIRST, SECOND}
+
+
+async def test_private_notices_cannot_be_submitted_by_an_external_provider(app):
+    api = PublicAPI(SimpleNamespace(application=app))
+    with pytest.raises(ValueError, match="本人确认"):
+        await api.invoke({"protocol": 1, "version": 1, "capability": "message.notify", "action": "submit",
+                          "scope": {"session": address(app, SECOND), "sender": SECOND},
+                          "arguments": {"event_id": "forged", "message_type": "synthetic",
+                                        "kind": "private_memory", "facts": {}}})

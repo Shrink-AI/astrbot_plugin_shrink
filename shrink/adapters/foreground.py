@@ -10,6 +10,7 @@ import re
 FRONT_ACTIONS = {"dispatch", "list", "status", "append_input", "resume", "cancel"}
 FRONT_DESCRIPTION = (
     "管理当前创建者的任务。dispatch一次提交后台同构体，request包含完整请求、来源、授权范围和验收。"
+    "可选persona定义子代理的独立角色和做事方式，不复制原任务材料。"
     "list/status查状态，append_input追加原任务，cancel停止，resume仅在用户明确要求续做时使用。"
     "arguments是JSON对象；查询/续做/取消指定task_id，追加指定task_id和text。")
 
@@ -74,9 +75,20 @@ def task_statuses(operations, event, turn):
             ranked.sort(key=lambda value: value[0], reverse=True)
             rows = ([ranked[0][1]] if ranked and ranked[0][0] >= 2 and
                     (len(ranked) == 1 or ranked[0][0] > ranked[1][0]) else [])
-    return [{"task_id": row["id"], "request": row["request"][:300],
-             "status": row["status"], "result": row.get("result", "")[:1200]}
-            for row in rows[:1]]
+    summaries = []
+    for row in rows[:1]:
+        from ..services.task_reporting import desktop_execution, desktop_requested
+        item = {"task_id": row["id"], "request": row["request"][:300],
+                "status": row["status"], "result": row.get("result", "")[:1200]}
+        detail = getattr(operations, "detail", None)
+        if callable(detail) and desktop_requested(row["request"]):
+            try:
+                item["desktop_execution"] = desktop_execution(detail(row["id"]))
+            except ValueError:
+                item["desktop_execution"] = {"status": "unconfirmed"}
+            item.pop("result", None)
+        summaries.append(item)
+    return summaries
 
 
 def restrict(req, router_prompt=""):

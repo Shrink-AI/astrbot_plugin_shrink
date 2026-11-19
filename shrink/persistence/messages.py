@@ -175,6 +175,14 @@ class MessageRepository:
             (source, since, int(include_private), user_id, user_id, limit),
         ))
 
+    def private_matches(self, source, user_id, since, terms, limit):
+        if not terms:
+            return []
+        matches = " OR ".join("instr(lower(text),?)" for _ in terms)
+        return self.current(self.database.rows(
+            "SELECT * FROM messages WHERE source=? AND user_id=? AND is_bot=0 AND created>=? "
+            f"AND ({matches}) ORDER BY created DESC LIMIT ?", (source, user_id, since, *terms, limit)))
+
     def get_many(self, ids):
         if not ids:
             return []

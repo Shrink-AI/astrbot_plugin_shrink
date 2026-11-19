@@ -65,6 +65,8 @@ class PublicAPI:
             if request['action'] == 'submit':
                 if 'facts' not in args:
                     raise ValueError('需要通知事实')
+                if args.get('kind') == 'private_memory' or args['message_type'] == 'core.private_memory':
+                    raise ValueError('私聊共享通知仅可由本人确认入口提交')
                 row = app.notification_outbox.submit(scope, args['event_id'], args['facts'],
                     kind=args.get('kind', 'result'), message_type=args['message_type'],
                     task_id=args.get('task_id', ''), fact_refs=args.get('fact_refs', ()),

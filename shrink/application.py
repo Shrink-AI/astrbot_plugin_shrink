@@ -131,6 +131,8 @@ class Application:
             self.notification_outbox.scheduling = self.scheduling
             self.notification_outbox.record = self.outbound.record
             self.notification_outbox.persona = self.outbound.persona
+            from .services.private_memory import PrivateMemory
+            self.private_memory = PrivateMemory(self.database, self.messages, self.notification_outbox)
             self.expression.outbound = self.outbound
             self.materials = Materials(self)
             self.attachments = Attachments(self)

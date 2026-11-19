@@ -106,3 +106,14 @@ async def test_lookup_reaches_other_groups_for_the_asker_only(app):
     other = await app.tools.lookup("聚餐", source=B, speaker=OTHER, private=False,
                                    request="成员甲私聊说的聚餐")
     assert "老地方" not in other and "两百" not in other
+
+
+def test_private_lookup_uses_real_topic_even_after_classification_fails(app):
+    say(app, "older", ME, "备份放在金丝雀服务器", DM, ago=2 * 86400)
+    say(app, "secret", ME, "绝密会场地址", DM, ago=10)
+    say(app, "different", ME, "备份在别的私聊，不能串档", "qq:private:another")
+    found = app.recent.find(ME, B, "我私聊提过备份的位置吗", decision={
+        "fallback": True, "reason": "timeout", "decision": {"topic": None}})
+    assert "金丝雀服务器" in str(found.lines)
+    assert "绝密会场" not in str(found.lines) and "不能串档" not in str(found.lines)
+    assert not app.recent.find(ME, B, "备份", request="刚才私聊说了什么").lines

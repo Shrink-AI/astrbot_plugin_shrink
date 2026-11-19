@@ -6,7 +6,6 @@ import re
 import uuid
 
 from ..prompts import text as prompt_text
-from ..config import persona_prompt
 from ..persistence.clarifications import Clarifications
 from ..persistence.task_inputs import TaskInputsRepository
 from ..persistence.tasks import Tasks
@@ -14,6 +13,18 @@ from ..services.task_states import TaskStates, ACTIVE
 from ..services.task_execution import AwaitingUserInput
 from ..services.task_inputs import TaskInputs
 from ..services.scheduling import shared_lock
+
+
+def dispatch_persona(request):
+    roles = (
+        (r"windows|本机|电脑|桌面", "本机任务执行员，先核对设备、授权和实际回执"),
+        (r"测试|调试|排查|修复|开发|代码|部署", "工程执行员，优先复现和定向验证，不扩大改动"),
+        (r"调查|研究|查找|调研|核对|资料", "资料核查员，分清来源、推断和未核实之处"),
+        (r"撰写|整理|文档|报告|总结", "文档整理员，保留事实和交付格式，不补造内容"),
+    )
+    role = next((identity for pattern, identity in roles if re.search(pattern, request, re.I)),
+                "独立任务执行员，按目标和验收条件明确取舍")
+    return f"你是{role}。向委派方简明报告已确认结果、未完成事项及阻碍，不冒充石英或重复向用户发消息。"
 
 
 class AgentTasks:
@@ -71,15 +82,18 @@ class AgentTasks:
                 raise ValueError('任务与原始上下文合计超过32000字，请缩短派工说明')
             self.task_states.capacity('agent')
             agent = 'task_' + uuid.uuid4().hex[:12]
-            await self.create_agent({
-                'name': agent, 'instructions': request[:12000], 'tools': ['*'],
-            })
+            assignment = {
+                'name': agent, 'instructions': '按本次派工指定的目标、授权范围和验收条件执行；任务内容见当次输入。',
+                'tools': ['*'], 'persona': args.get('persona', dispatch_persona(request)),
+            }
+            await self.create_agent(assignment)
             result = await self.submit_agent(event, agent, payload)
             event.set_extra('shrink_dispatch', {'request': request, 'result': result})
             return result
         if action == 'guide':
             return {
-                'dispatch': {'request': '完整任务、当前授权范围、来源和验收要求；一次提交后台'},
+                'dispatch': {'request': '完整任务、当前授权范围、来源和验收要求；一次提交后台',
+                             'persona': '可选，定义该子代理的独立角色、做事方式和汇报标准；不要复制原任务或凭据'},
                 'create': {'name': '任务用途英文名', 'persona': '角色人格、交流方式与职责边界',
                            'instructions': '职责、范围和验收',
                            'tools': ['从tools返回列表选取'], 'provider_id': 'shrink/gpt-6.1-sol'},
@@ -234,34 +248,50 @@ class AgentTasks:
             raise ValueError('工具不存在或未启用：' + ','.join(sorted(set(tools) - allowed)))
         if tools and 'shrink_lookup' in allowed and 'shrink_lookup' not in tools:
             tools = [*tools, 'shrink_lookup']
-        role_persona = args.get('persona', '你是石英的任务同构体，沿用石英人格，专注当前分工；'
-                                '对内明确说明证据、未知和阻碍，不向用户重复发送进度。')
+        role_persona = args.get('persona', dispatch_persona(instructions))
         if not isinstance(role_persona, str) or not role_persona.strip() or len(role_persona) > 3000:
             raise ValueError('persona需要明确角色人格，最多3000字')
-        repository = getattr(self.app, 'persona_repository', None)
-        personality = persona_prompt(repository.learned_persona() if repository else '')
         provider = args.get('provider_id', 'shrink/gpt-6.1-sol')
         if not any(p.get('id') == provider for p in self.context.get_config().get('provider', [])):
             raise ValueError('模型必须是已配置provider_id')
+        persona_id = "shrink_agent_" + name
+        main_persona = getattr(getattr(self.app.state, "settings", None), "persona_id", "default")
+        if persona_id == main_persona:
+            raise ValueError('生成的人格标识与石英主人格冲突，请为代理另取名称')
+        tools = list(dict.fromkeys(tools))
+        prompt = f"角色人格：{role_persona.strip()}\n任务职责：{instructions.strip()}\n{prompt_text('tasks.agent_policy')}"
+        definition = {'name': name, 'enabled': True, 'provider_id': provider, 'persona_id': persona_id,
+                      'tools': tools, 'public_description': instructions[:160], 'system_prompt': prompt}
+        manager = self.context.persona_manager
         async with shared_lock(self.agent_config_lock):
             config = await self.app.native.call('subagents', 'list')
             agents = list(config.get('agents', []))
             existing = next((a for a in agents if a.get('name') == name), None)
-            definition = {'name': name, 'enabled': True, 'provider_id': provider, 'persona_id': None,
-                          'tools': list(dict.fromkeys(tools)),
-                          'public_description': instructions[:160],
-                          'system_prompt': personality + '\n角色人格：' + role_persona + '\n任务职责：'
-                                           + instructions + '\n' + prompt_text('tasks.agent_policy')}
-            if existing:
-                if all(existing.get(k) == v for k, v in definition.items()):
-                    return {'agent': name, 'existing': True, 'provider': provider}
+            if existing and not all(existing.get(k) == v for k, v in definition.items()):
                 raise ValueError('同名代理已存在且定义不同，请选新名称或通过原生管理明确更新')
-            # Tasks run through submit; the handoff list is loaded whether or not the host
-            # mounts synchronous transfer_to_* tools on the main chat, so leave that setting.
-            config['agents'] = [*agents, definition]
-            await self.app.native.call('subagents', 'update', config)
+            if any(a.get('name') != name and a.get('persona_id') == persona_id for a in agents):
+                raise ValueError('该人格标识已被其他子代理使用，请为代理另取名称')
+            try:
+                persona = await manager.get_persona(persona_id)
+            except ValueError:
+                persona = None
+            if persona is None:
+                await manager.create_persona(persona_id, prompt, begin_dialogs=[], tools=tools)
+                persona = await manager.get_persona(persona_id)
+            elif persona.system_prompt != prompt or persona.tools != tools or persona.begin_dialogs:
+                raise ValueError('专属人格已存在且内容不同，不覆盖原设置')
+            if persona.system_prompt != prompt or persona.tools != tools:
+                raise RuntimeError('AstrBot 未保存预期的子代理人格')
+            if not existing:
+                config['agents'] = [*agents, definition]
+                await self.app.native.call('subagents', 'update', config)
+            handoff = next((h for h in self.context.subagent_orchestrator.handoffs if h.agent.name == name), None)
+            if handoff is None or handoff.agent.instructions != prompt.strip() or handoff.agent.tools != tools:
+                raise RuntimeError('AstrBot 未加载预期的子代理人格；请检查原生子代理配置')
+            if existing:
+                return {'agent': name, 'existing': True, 'provider': provider, 'persona_id': persona_id}
         self.record('agent_created', name, result=json.dumps(definition, ensure_ascii=False))
-        return {'agent': name, 'provider': provider, 'tools': definition['tools'], 'created': True}
+        return {'agent': name, 'provider': provider, 'persona_id': persona_id, 'tools': tools, 'created': True}
 
     async def submit_agent(self, event, agent, request, depends_on=None, parent=''):
         from ..services.task_context import CURRENT_TASK

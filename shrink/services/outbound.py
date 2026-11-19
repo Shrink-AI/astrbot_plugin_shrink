@@ -8,7 +8,7 @@ import time
 import httpx
 
 from ..persistence.compositions import Compositions
-from .composition import ChatReply, SILENT, Silent, fallback, NOTIFICATION
+from .composition import ChatReply, SILENT, Silent, fallback, NOTIFICATION, reference, task_status_text
 from .notification_selection import necessary
 
 from ..config import persona_prompt
@@ -34,6 +34,12 @@ class Outbound:
         if chat is not None:
             facts = {"answer": chat.text, "execution": chat.execution}
         identity = None if chat is not None else self.repository.save(facts, request, kind, scope)
+        if (chat is None and kind in {"task_result", "blocker"} and isinstance(facts, dict)
+                and facts.get("desktop_execution")):
+            fixed = task_status_text(facts)
+            if fixed:
+                self.repository.finish(identity, "ready", fixed)
+                return fixed
         started = time.monotonic()
         expression_path = "model"
         result = None
@@ -66,7 +72,7 @@ class Outbound:
                     expression_path = "chat_recovery"
                     clean, _, _ = take_markers(strip_reasoning(chat.text))
                     from .outbound_guard import unsafe
-                    result = fallback((chat.execution or {}).get("status")) or SILENT
+                    result = task_status_text(chat.execution) or fallback((chat.execution or {}).get("status")) or SILENT
                     if recovery and not required:
                         result = SILENT
                     elif not recovery and clean.strip() and not unsafe(
@@ -78,13 +84,18 @@ class Outbound:
                 else:
                     expression_path = "plugin_fallback" if plugin_fallback else "status_fallback"
                     known = facts.get("status") if isinstance(facts, dict) else None
-                    result = plugin_fallback or fallback(known) or render("outbound.fallback")
+                    result = plugin_fallback or task_status_text(facts) or fallback(known) or render("outbound.fallback")
+                    if kind == "task_result" and not plugin_fallback and isinstance(facts, dict):
+                        task = reference(facts.get("task_id"))
+                        if task and task not in result:
+                            result = f"石英任务 {task}：\n{result}"
                 break
         if isinstance(result, str):
             from .outbound_guard import safe_expression, unsafe
             if chat:
                 if unsafe(result, chat.execution or {}, self.persona(), detail=detail):
-                    result = (fallback((chat.execution or {}).get("status")) or SILENT) if required else SILENT
+                    result = (task_status_text(chat.execution) or fallback(
+                        (chat.execution or {}).get("status")) or SILENT) if required else SILENT
             else:
                 if plugin_fallback and unsafe(plugin_fallback, facts, self.persona(), readable_fallback=True):
                     plugin_fallback = ""

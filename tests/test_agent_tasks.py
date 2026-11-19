@@ -19,11 +19,25 @@ class Event:
     def get_extra(self, key, default=None): return self.extra.get(key, default)
 
 
+class Personas:
+    def __init__(self):
+        self.values = {"default": SimpleNamespace(system_prompt="石英主人格", tools=None, begin_dialogs=[])}
+
+    async def get_persona(self, identity):
+        if identity not in self.values:
+            raise ValueError("persona not found")
+        return self.values[identity]
+
+    async def create_persona(self, identity, system_prompt, *, tools, begin_dialogs):
+        assert identity not in self.values
+        self.values[identity] = SimpleNamespace(system_prompt=system_prompt, tools=tools, begin_dialogs=begin_dialogs)
+
+
 @pytest.fixture
 def runtime(tmp_path):
     db = Database(tmp_path / 'state')
     config = {'provider': [{'id': 'shrink/gpt-6.1-sol'}]}
-    ctx = SimpleNamespace(get_config=lambda: config,
+    ctx = SimpleNamespace(get_config=lambda: config, persona_manager=Personas(),
                           subagent_orchestrator=SimpleNamespace(handoffs=[]))
     app = SimpleNamespace(database=db, state=SimpleNamespace(root=tmp_path / 'state'),
                           tasks=SimpleNamespace(error=lambda *args: None))
@@ -33,7 +47,9 @@ def runtime(tmp_path):
         if action == 'list': return copy.deepcopy(native_config)
         native_config.update(copy.deepcopy(arguments))
         ctx.subagent_orchestrator.handoffs = [SimpleNamespace(
-            provider_id=a['provider_id'], agent=SimpleNamespace(name=a['name'], tools=a['tools'], instructions=a['system_prompt']))
+            provider_id=a['provider_id'], agent=SimpleNamespace(
+                name=a['name'], tools=ctx.persona_manager.values[a['persona_id']].tools,
+                instructions=ctx.persona_manager.values[a['persona_id']].system_prompt.strip()))
             for a in arguments['agents']]
     app.native = SimpleNamespace(call=AsyncMock(side_effect=native))
     op = Operations(ctx, app, tmp_path / 'plugins' / 'core')
@@ -54,11 +70,14 @@ async def test_dispatch_submits_in_one_call_without_waiting_and_reuses_receipt(r
         return "完成"
     op.invoke_agent = execute
     try:
-        result = await op.orchestrate(event, "dispatch", {"request": "检查项目资料"})
-        again = await op.orchestrate(event, "dispatch", {"request": "检查项目资料"})
+        result = await op.orchestrate(event, "dispatch", {
+            "request": "检查项目资料 KNOWN-PRIVATE-INPUT", "persona": "独立审阅员，先核实来源。"})
+        again = await op.orchestrate(event, "dispatch", {"request": "检查项目资料 KNOWN-PRIVATE-INPUT"})
         assert again["task_id"] == result["task_id"]
         assert result["completed"] is False and len(op.list()) == 1
         assert not gate.is_set()
+        persona = op.context.persona_manager.values["shrink_agent_" + result["agent"]]
+        assert "独立审阅员" in persona.system_prompt and "KNOWN-PRIVATE-INPUT" not in persona.system_prompt
     finally:
         gate.set()
         await asyncio.gather(*op.running.values())
@@ -153,10 +172,22 @@ async def test_native_dynamic_create_preserves_agents_and_rejects_missing_tools(
     await create(op, 'second_agent')
     assert len(config['agents']) == 2
     assert (await create(op, 'first_agent'))['existing']
+    identities = [agent["persona_id"] for agent in config["agents"]]
+    assert identities == ["shrink_agent_first_agent", "shrink_agent_second_agent"]
+    assert op.context.persona_manager.values["default"].system_prompt == "石英主人格"
     with pytest.raises(ValueError, match='工具不存在'):
         await op.create_agent({'name': 'bad_agent', 'instructions': 'test', 'tools': ['invented']})
     with pytest.raises(ValueError, match='同名'):
         await op.create_agent({'name': 'first_agent', 'instructions': 'changed', 'tools': []})
+
+
+async def test_existing_persona_conflict_does_not_overwrite_it(runtime):
+    op, _, config = runtime
+    await op.context.persona_manager.create_persona("shrink_agent_researcher", "手动定义", tools=[], begin_dialogs=[])
+    with pytest.raises(ValueError, match="不覆盖"):
+        await create(op)
+    assert config["agents"] == []
+    assert op.context.persona_manager.values["shrink_agent_researcher"].system_prompt == "手动定义"
 
 
 @pytest.mark.asyncio

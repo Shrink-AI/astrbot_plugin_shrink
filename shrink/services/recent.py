@@ -22,6 +22,20 @@ ASKED = re.compile(
     r"刚才|刚刚|之前|上次|早上|昨天|另一个群|别的群|其他群|那个群|隔壁群|别处|"
     r"还记得|记得.{0,12}[吗嘛么]|说过|聊过|问过|提过|讲过|打过招呼|私聊|私下|私信|小窗")
 PRIVATE = re.compile(r"私聊|私下|私信|小窗|单独(跟|和|找)你")
+PRIVATE_FILLER = re.compile(
+    r"刚才|刚刚|之前|上次|那个|这个|还记得|记得|说过|说的|聊过|聊的|问过|提过|跟你|和你|"
+    r"继续|什么|多少|的是|的事|这件事|告诉|有没有|可以|知道|一下|原文|内容|关键词|"
+    r"私聊|私下|私信|小窗|单独|查找|检索")
+
+
+def topic_terms(request):
+    return {term for term in grams(PRIVATE_FILLER.sub(" ", request or ""), n=2, limit=48)
+            if len(term) >= 2}
+
+
+def private_match(request, text):
+    value = (text or "").lower()
+    return not value.startswith("[原消息已") and any(term in value for term in topic_terms(request))
 
 
 @dataclass
@@ -66,12 +80,13 @@ class RecentInteractions:
         only that can widen the search or open their private chat, never a model's paraphrase."""
         now = now or time.time()
         request = text if request is None else request
-        asked = (bool(decision["decision"]["topic"]) if decision and not decision["fallback"]
+        explicit_private = bool(PRIVATE.search(request or ""))
+        asked = explicit_private or (
+                 bool(decision["decision"]["topic"]) if decision and not decision["fallback"]
                  and decision.get("reason") != "decision_disabled"
                  else bool(ASKED.search(request or "")))
-        private_ok = is_private(source) or bool(PRIVATE.search(request or ""))
         since = now - (ASKED_SECONDS if asked else AUTO_SECONDS)
-        rows = self.messages.elsewhere(user_id, source, since, SCAN, include_private=private_ok)
+        rows = self.candidates(user_id, source, since, request, SCAN)
         result = Recent(asked=asked, found=sum(1 for r in rows if not r["is_bot"]),
                         capped=len(rows) >= SCAN, since=since)
         if not rows:
@@ -103,6 +118,17 @@ class RecentInteractions:
         result.lines = [self.line(r, name, now) for r in chosen]
         return result
 
+    def candidates(self, user_id, source, since, request, limit):
+        rows = self.messages.elsewhere(user_id, source, since, limit, include_private=False)
+        if not is_private(source) and PRIVATE.search(request or ""):
+            platform, _, account = user_id.partition(":")
+            own_private = f"{platform}:private:{account}"
+            selected = [row for row in self.messages.private_matches(
+                own_private, user_id, since, sorted(topic_terms(request)), limit)
+                        if private_match(request, row["text"])]
+            rows.extend(selected)
+        return rows
+
     @staticmethod
     def replies(rows, row, user_id):
         """The bot's recorded reply to this message, if it sent one."""
@@ -131,7 +157,10 @@ class RecentInteractions:
                 return ["（查了别处的记录：最近没有查到 " + name + " 在其他会话的发言。"
                         "没查到只说明这里没有记录，不能断言没发生，也不要假装记得。）"]
             return []
-        head = f"（{name} 最近在别处说过的，来自原始记录；没列出你的回复就是当时没有回复）"
+        note = ("私聊只列与问题相关的发言，不推断当时是否回复" if
+                any(line.startswith("  私聊 [") for line in result.lines) else
+                "没列出你的回复就是当时没有回复")
+        head = f"（{name} 最近在别处说过的，来自原始记录；{note}）"
         out = [head, *result.lines]
         if result.omitted:
             count = f"至少 {result.omitted}" if result.capped else str(result.omitted)

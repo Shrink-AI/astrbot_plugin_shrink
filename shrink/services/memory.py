@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 
 from ..text_rules import INSULT, grams, normalize
 from .quality import ACTIVE_AT
+from .recent import PRIVATE, private_match
 
 HALF_LIFE = {"topic": 30, "event": 30, "impression": 180, "glossary": 180, "lesson": 60}
 # Calibrated on bge-m3 against production memories: unrelated pairs reach ~0.61,
@@ -28,6 +29,7 @@ class Query:
     mentioned: list = field(default_factory=list)
     window: list = field(default_factory=list)
     private: bool = False
+    request: str = ""
 
 
 def _date(ts):
@@ -237,6 +239,12 @@ class MemoryService:
     def _score(self, row, query, vector, query_grams, terms, now):
         if row["status"] != "active":
             return 0.0
+        if ":private:" in row["source"] and row["source"] != query.source:
+            platform, _, account = query.speaker.partition(":")
+            if (row["source"] != f"{platform}:private:{account}"
+                    or not PRIVATE.search(query.request)
+                    or not private_match(query.request, row["text"])):
+                return 0.0
         if row["valid_until"] and row["valid_until"] < now:
             return 0.0
         age_days = max(0.0, (now - row["updated"]) / 86400)
@@ -277,8 +285,6 @@ class MemoryService:
             and relevance < 0.35
         ):
             return 0.0  # Unmentioned third parties from elsewhere need strong relevance.
-        if ":private:" in row["source"] and not same_place and row["subject"] != query.speaker:
-            return 0.0
         quality = 0.6 + 0.4 * row["confidence"]
         importance = 0.7 + 0.075 * row["importance"]
         decay = 0.5 ** (age_days / HALF_LIFE.get(row["kind"], 60))

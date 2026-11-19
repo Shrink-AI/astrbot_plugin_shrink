@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..text_rules import grams
-from .recent import ASKED, PRIVATE, is_private
+from .recent import ASKED, RecentInteractions
 from .turn_control import is_stop_request, is_revocation, is_task_followup
 
 logger = logging.getLogger(__name__)
@@ -140,9 +140,8 @@ class Decisions:
         meta = event["metadata"]
         source = meta.get("source", event["session"])
         speaker = meta.get("platform", "") + ":" + event["sender"]
-        rows = self.messages.elsewhere(
-            speaker, source, time.time() - 7 * 86400, 100,
-            include_private=is_private(source) or bool(PRIVATE.search(text)))
+        rows = RecentInteractions(self.messages).candidates(
+            speaker, source, time.time() - 7 * 86400, text, 100)
         local = self.messages.window(source, 20)
         people = [{"id": speaker}]
         for row in local:

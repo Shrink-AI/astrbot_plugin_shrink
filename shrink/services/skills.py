@@ -45,6 +45,9 @@ def tool_step(name, args, result):
     except (TypeError, ValueError):
         args_text = str(args)
     evidence = execution_evidence(result)
+    if evidence and evidence.get("domain") == "desktop":
+        from .tool_evidence import desktop_tool_evidence
+        evidence = desktop_tool_evidence(name, args, result)
     result = re.sub(r"\s+", " ", str(result or "")).strip()
     return {
         "name": str(name),

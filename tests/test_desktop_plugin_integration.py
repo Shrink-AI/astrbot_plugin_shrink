@@ -54,6 +54,7 @@ class Device:
         self.seq = 0
         self.executions = {}
         self.wires = []
+        self.probes = []
         self.drop_results = False
         self.acks = asyncio.Queue()
         self.ws = self.reader = None
@@ -77,6 +78,11 @@ class Device:
                 self.executions.setdefault(body["id"], {"ok": True})
                 if not self.drop_results:
                     await self.ws.send_json({"type": "result", "id": body["id"], "result": self.executions[body["id"]]})
+            elif body["type"] == "command_receipt":
+                self.probes.append(body["id"])
+                if not self.drop_results:
+                    await self.ws.send_json({"type": "result", "id": body["id"],
+                                             "result": self.executions.get(body["id"], {"state": "not_recorded"})})
 
     async def publish(self, event):
         self.seq += 1
@@ -207,7 +213,7 @@ async def test_real_plugin_revoked_queued_approval_not_dispatched(rig):
             "approval_id": "offline", "category": "execute", "expires": time.time() + 600}
     row = rig.app.authorizations.receive(body, SCOPE)
     result = await rig.app.authorizations.process(row["id"])
-    assert result["state"] == "unknown"
+    assert result["state"] == "held"
     rig.app.authorizations.change(user(rig, "撤销授权 " + policy["id"], "revoke"), SCOPE, policy["id"], "revoked")
     await rig.device.connect()
     await rig.device.publish({"kind": "barrier"})
@@ -228,8 +234,8 @@ async def test_real_plugin_reconnect_same_command_never_second_approval(rig):
     await rig.device.publish({"kind": "barrier"})
     result = await rig.app.authorizations.process(row["id"])
     assert result["state"] == "confirmed"
-    assert len(rig.device.executions) == 1 and len(rig.device.wires) == 2
-    assert rig.device.wires[0] == rig.device.wires[1]
+    assert len(rig.device.executions) == 1 and len(rig.device.wires) == 1
+    assert rig.device.probes == [rig.device.wires[0]["id"]]
 
 
 async def test_real_plugin_notify_core_owns_send_once_and_legacy_delivery_not_replayed(rig):
@@ -250,6 +256,37 @@ async def test_real_plugin_notify_core_owns_send_once_and_legacy_delivery_not_re
             (rig.id, rig.device.seq, rig.plugin.transport.scope(SCOPE)))
     await rig.plugin.deliver_events()
     assert len(rig.app.notification_outbox.repository.list()) == 1
+
+
+async def test_late_desktop_start_failure_sends_fixed_receipt_to_origin_once(rig):
+    await rig.device.connect()
+    rig.device.drop_results = True
+    reply = await rig.plugin.call("start", {"device_id": rig.id, "request_id": "late", "cwd": ".",
+                                            "agent": "codex", "prompt": "isolated probe"}, SCOPE)
+    assert reply["execution"]["status"] == "awaiting_receipt"
+    await rig.device.ws.send_json({"type": "result", "id": reply["command_id"],
+                                   "result": {"ok": False, "error": "fixture failure"}})
+    await rig.device.publish({"kind": "barrier"})
+    await rig.plugin.deliver_command_failures()
+    await rig.plugin.deliver_command_failures()
+    await flush(rig)
+    await flush(rig)
+    assert len(rig.sent) == 1 and rig.sent[0][0] == SCOPE["session"]
+    assert "电脑端回报执行失败" in rig.sent[0][1] and reply["command_id"] in rig.sent[0][1]
+    assert "fixture failure" not in rig.sent[0][1]
+
+
+async def test_desktop_terminal_event_fallback_preserves_reference_after_two_timeouts(rig):
+    await rig.device.connect()
+    rig.app.expression.model.side_effect = TimeoutError()
+    await rig.device.publish({"kind": "result", "session_id": "s", "state": "completed",
+                              "detail": {"text": "unverified fixture output"}})
+    await rig.plugin.deliver_events()
+    await flush(rig)
+    assert rig.app.expression.model.await_count == 2
+    assert len(rig.sent) == 1 and rig.sent[0][0] == SCOPE["session"]
+    assert "电脑会话 s，结果编号 1" in rig.sent[0][1]
+    assert "任务目标是否完成仍以结果记录为准" in rig.sent[0][1]
 
 
 async def test_real_plugin_natural_denial_sends_false_and_records_receipt(rig):

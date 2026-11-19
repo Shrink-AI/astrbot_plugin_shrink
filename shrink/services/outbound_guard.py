@@ -2,7 +2,7 @@
 import json
 import re
 
-from .composition import SILENT, fallback
+from .composition import SILENT, fallback, task_status_text
 from ..prompts import render
 from .reply_text import PROMPT_LEAK
 
@@ -40,8 +40,11 @@ def unsafe(text, facts, system="", *, detail=False, readable_fallback=False):
 
 
 def safe_expression(text, facts, kind, system=""):
+    canonical = task_status_text(facts)
+    if canonical and text == canonical:
+        return canonical
     if not unsafe(text, facts, system):
         return text
     if kind in {"progress", "tool_progress"}:
         return SILENT
-    return fallback(facts.get("status") if isinstance(facts, dict) else None) or render("outbound.fallback")
+    return canonical or fallback(facts.get("status") if isinstance(facts, dict) else None) or render("outbound.fallback")

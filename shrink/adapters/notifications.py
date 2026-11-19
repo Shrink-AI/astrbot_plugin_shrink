@@ -5,6 +5,7 @@ from functools import partial
 from types import SimpleNamespace
 from ..persistence.notifications import NotificationRepository
 from ..services.composition import Silent
+from ..services.private_memory import NOTICE_KIND
 
 
 class Notifications:
@@ -49,9 +50,9 @@ class Notifications:
         self.inflight.add(identity)
         sending = False
         try:
-            text = await self.app.outbound.compose(
-                facts, request=request, kind=kind, scope=scope)
-            if isinstance(text, Silent):
+            text = (self.app.private_memory.render_notice(scope, facts) if kind == NOTICE_KIND else
+                    await self.app.outbound.compose(facts, request=request, kind=kind, scope=scope))
+            if isinstance(text, Silent) or (kind == NOTICE_KIND and not text):
                 self.repository.state(identity, "silent")
                 return False
             if event.get_extra("shrink_cancelled"):
@@ -70,7 +71,8 @@ class Notifications:
             if accepted is False:
                 raise RuntimeError("结果发送未确认")
             self.repository.state(identity, "platform_accepted", text)
-            self.app.outbound.record(scope, text, identity)
+            if kind != NOTICE_KIND:
+                self.app.outbound.record(scope, text, identity)
             return True
         except BaseException as exc:
             # A recording failure after acceptance must never make the send retryable.

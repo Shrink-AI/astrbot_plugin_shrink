@@ -130,6 +130,11 @@ class ExpressionService:
         system = persona_prompt(self.personas.learned_persona())
         steps = (execution or {}).get("tool_steps", [])
         material = execution or {}
+        if execution and execution.get("desktop_execution"):
+            from .composition import task_status_text
+            verified_status = task_status_text(execution)
+            if verified_status:
+                return Finished(verified_status)
 
         def invalid(value):
             return (unsafe(value, material, system, detail=explicit_detail)
