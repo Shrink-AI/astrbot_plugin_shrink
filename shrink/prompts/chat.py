@@ -50,6 +50,7 @@ def turn_prompt(
     if allow_skip:
         tail.append(text("chat.turn.skip"))
     tail.append(text("chat.tools_hint"))
+    tail.append(text("chat.private_memory"))
     tail.append(text("chat.turn.end"))
     return join(
         block("人物", people),

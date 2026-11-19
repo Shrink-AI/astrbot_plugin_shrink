@@ -29,9 +29,9 @@ def history(app, account, text, identity, instance="bot"):
     app.history.repository.append(session, "message:" + identity, "user", identity)
 
 
-def grant(app):
+def grant(app, scope=""):
     address(app, SECOND)
-    preview = command(app, FIRST, f"私聊互授权 {SECOND}")
+    preview = command(app, FIRST, f"私聊互授权 {SECOND} {scope}".strip())
     identity = preview.split()[-1]
     command(app, FIRST, f"确认互授权 {identity}")
     return identity
@@ -105,6 +105,62 @@ def test_declined_and_expired_invites_never_expose_messages(app):
     assert "没有查到" in command(app, SECOND, "查共享 金丝雀")
     notices = app.notification_outbox.repository.list()
     assert {row["sender"] for row in notices if row["facts"]["state"] == "expired"} == {FIRST, SECOND}
+
+
+def test_all_memory_upgrade_requires_fresh_consent_and_source_proof(app):
+    source = f"qq:private:{FIRST}"
+    history(app, FIRST, "金丝雀原文", "private")
+    history(app, FIRST, "隔离实例原文", "foreign", instance="another")
+    history(app, SECOND, "向日葵原文", "second")
+    history(app, FIRST, "待撤回原文", "removed")
+    app.history.repository.append(address(app, FIRST), "revision", "user", kind="retracted", target="removed")
+    for text, refs, status, origin, place in (
+        ("可查整理词", ["private"], "active", "digest", source),
+        ("不可查无来源", [], "active", "digest", source),
+        ("不可查跨实例", ["foreign"], "active", "digest", source),
+        ("不可查混合来源", ["private", "foreign"], "active", "digest", source),
+        ("不可查仅候选", ["private"], "candidate", "digest", source),
+        ("不可查群记忆", ["private"], "active", "digest", "qq:group:55"),
+        ("不可查已撤回", ["removed"], "active", "explicit", source),
+    ):
+        app.memory_repository.add("impression", f"qq:{FIRST}", place, text,
+                                  evidence=refs, status=status, origin=origin)
+    app.memory_repository.add("event", f"qq:{SECOND}", f"qq:private:{SECOND}", "向日葵整理",
+                              evidence=["second"], origin="explicit")
+    old = grant(app)
+    command(app, SECOND, f"接受互授权 {old}")
+    assert "可查整理词" not in command(app, SECOND, f"查共享 {FIRST}")
+    full = grant(app, "全部记忆")
+    assert "可查整理词" not in command(app, SECOND, f"查共享 {FIRST}")
+    pending = next(row for row in app.notification_outbox.repository.list()
+                   if row["facts"] == {"consent": full, "state": "pending"})
+    assert "整理记忆" in app.private_memory.render_notice(
+        {"session": address(app, SECOND), "sender": SECOND}, pending["facts"])
+    assert command(app, SECOND, f"接受互授权 {full}") == ""
+    page = command(app, SECOND, f"查共享 {FIRST}")
+    assert "可查整理词" in page and "金丝雀原文" in page
+    assert "不可查" not in page and "待撤回原文" not in page and "隔离实例原文" not in page
+    assert "向日葵整理" in command(app, FIRST, f"查共享 {SECOND} 向日葵整理")
+    assert "没有查到" in command(app, OTHER, f"查共享 {FIRST}")
+    assert "没有查到" in command(app, SECOND, f"查共享 {FIRST}", instance="another")
+    assert command(app, SECOND, "查共享", session="bot:GroupMessage:55") is None
+    assert command(app, SECOND, f"撤销互授权 {old}") == ""
+    assert "没有查到" in command(app, SECOND, f"查共享 {FIRST}")
+    assert "没有查到" in command(app, FIRST, f"查共享 {SECOND}")
+
+
+def test_browse_and_keyword_pages_reach_beyond_old_candidate_limit(app):
+    for number in range(43):
+        history(app, FIRST, f"星河档案 {number:02d}", f"private-{number}")
+    identity = grant(app)
+    command(app, SECOND, f"接受互授权 {identity}")
+    first = command(app, SECOND, f"查共享 {FIRST}")
+    last = command(app, SECOND, f"查共享 {FIRST} 星河档案 第8页")
+    assert "星河档案 42" in first and "星河档案 36" not in first
+    assert f"查共享 {FIRST} 第2页" in first
+    assert "星河档案 00" in last and "下一页" not in last
+    assert "没有查到" in command(app, SECOND, f"查共享 {FIRST} 第9页")
+    assert "星河档案 00" in command(app, SECOND, f"查共享 {FIRST} 星河档案 00")
 
 
 async def test_private_notices_cannot_be_submitted_by_an_external_provider(app):

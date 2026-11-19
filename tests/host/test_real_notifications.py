@@ -133,11 +133,19 @@ async def test_private_memory_platform_events_keep_granted_evidence_out_of_group
     first, second = "100001", "100002"
     await world.turn(private("这里的验证词是金丝雀密钥", first))
     await world.turn(private("注册我的收件私聊", second))
-    await world.turn(private(f"/私聊互授权 {second}", first))
+    requests = len(world.requests)
+    await world.turn(private("我要和咸鱼共享与你的私聊记忆", first))
+    assert "私聊互授权 对方QQ号 全部记忆" in world.sent[-1]
+    assert not world.app.database.rows("SELECT id FROM private_memory_consent")
+    await world.turn(private("我需要双向授权", first))
+    assert "双方确认后才生效" in world.sent[-1]
+    await world.turn(private(f"我要和 QQ {second} 共享全部私聊记忆", first))
+    assert "整理记忆" in world.sent[-1]
+    assert len(world.requests) == requests
     identity = world.sent[-1].split()[-1]
     await world.turn(private(f"确认互授权 {identity}", first))
     await world.app.notification_outbox.pump()
-    assert any(session.endswith(second) and "邀请" in text for session, text in deliveries)
+    assert any(session.endswith(second) and "整理记忆" in text for session, text in deliveries)
     await world.turn(private(f"接受互授权 {identity}", second))
     await world.turn(private("查共享 金丝雀密钥", second))
     assert "这里的验证词是金丝雀密钥" in world.sent[-1]
